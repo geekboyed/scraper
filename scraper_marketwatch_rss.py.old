@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""
+MarketWatch RSS Scraper
+Uses RSS feed to avoid bot protection
+"""
+
+import os
+import requests
+from xml.etree import ElementTree as ET
+from datetime import datetime
+import mysql.connector
+from mysql.connector import Error
+from dotenv import load_dotenv
+import html
+
+load_dotenv()
+
+class MarketWatchRSSScraper:
+    def __init__(self):
+        self.rss_url = "https://www.marketwatch.com/rss/topstories"
+        
+        self.db_config = {
+            'host': os.getenv('DB_HOST'),
+            'database': os.getenv('DB_NAME'),
+            'user': os.getenv('DB_USER'),
+            'password': os.getenv('DB_PASS')
+        }
+        
+        self.connection = None
+        self.source_id = 2  # MarketWatch source ID
+
+    def connect_db(self):
+        """Establish database connection"""
+        try:
+            self.connection = mysql.connector.connect(**self.db_config)
+            if self.connection.is_connected():
+                # Set timezone to PST
+                cursor = self.connection.cursor()
+                cursor.execute("SET time_zone = '-08:00'")
+                cursor.close()
+                print("✓ Connected to MySQL database")
+                return True
+        except Error as e:
+            print(f"✗ Error connecting to MySQL: {e}")
+            return False
+
+    def fetch_rss(self):
+        """Fetch and parse RSS feed"""
+        try:
+            print(f"Fetching RSS feed: {self.rss_url}")
+            
+            response = requests.get(self.rss_url, timeout=15)
+            response.raise_for_status()
+            
+            root = ET.fromstring(response.content)
+            
+            articles = []
+            
+            # Parse RSS items
+            for item in root.findall('.//item'):
+                title_elem = item.find('title')
+                link_elem = item.find('link')
+                
+                if title_elem is not None and link_elem is not None:
+                    title = html.unescape(title_elem.text)
+                    url = link_elem.text
+                    
+                    # Clean up URL (remove tracking parameters)
+                    if '?' in url:
+                        url = url.split('?')[0]
+                    
+                    articles.append({
+                        'title': title[:500],
+                        'url': url[:500],
+                        'date': datetime.now().date()
+                    })
+            
+            print(f"✓ Found {len(articles)} articles in RSS feed")
+            return articles
+            
+        except Exception as e:
+            print(f"✗ Error fetching RSS: {e}")
+            return []
+
+    def save_article(self, article_data):
+        """Save article to database"""
+        try:
+            cursor = self.connection.cursor()
+            
+            # Check if article already exists
+            cursor.execute("SELECT id FROM articles WHERE url = %s", (article_data['url'],))
+            
+            if cursor.fetchone():
+                cursor.close()
+                return 'skipped'
+            
+            # Insert new article
+            cursor.execute("""
+                INSERT INTO articles (source_id, title, url, published_date)
+                VALUES (%s, %s, %s, %s)
+            """, (
+                self.source_id,
+                article_data['title'],
+                article_data['url'],
+                article_data['date']
+            ))
+            
+            self.connection.commit()
+            cursor.close()
+            return 'saved'
+            
+        except Error as e:
+            print(f"  ✗ DB error: {e}")
+            return 'error'
+
+    def update_source_stats(self):
+        """Update source statistics"""
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute("""
+                UPDATE sources
+                SET last_scraped = NOW(),
+                    articles_count = (SELECT COUNT(*) FROM articles WHERE source_id = %s)
+                WHERE id = %s
+            """, (self.source_id, self.source_id))
+            self.connection.commit()
+            cursor.close()
+        except Error as e:
+            print(f"  ⚠ Error updating source stats: {e}")
+
+    def run(self):
+        """Main scraping workflow"""
+        print("=" * 60)
+        print("MarketWatch RSS Scraper")
+        print("=" * 60)
+        
+        if not self.connect_db():
+            return
+        
+        # Fetch articles from RSS
+        articles = self.fetch_rss()
+        
+        if not articles:
+            print("No articles found")
+            return
+        
+        # Save articles
+        print(f"\n💾 Saving {len(articles)} articles...")
+        saved = 0
+        
+        for i, article in enumerate(articles, 1):
+            result = self.save_article(article)
+            
+            if result == 'saved':
+                print(f"[{i}/{len(articles)}] ✓ {article['title'][:70]}")
+                saved += 1
+            elif result == 'skipped':
+                print(f"[{i}/{len(articles)}] ⊘ Duplicate")
+        
+        # Update source statistics
+        self.update_source_stats()
+        
+        print(f"\n{'=' * 60}")
+        print(f"✓ MarketWatch: {saved} new articles")
+        print(f"{'=' * 60}")
+        
+        if self.connection:
+            self.connection.close()
+
+if __name__ == "__main__":
+    scraper = MarketWatchRSSScraper()
+    scraper.run()
