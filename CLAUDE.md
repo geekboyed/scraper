@@ -47,13 +47,15 @@ A production web scraping and AI summarization system that collects business new
 - Handle errors gracefully with try/except blocks
 - Log important operations and errors
 - Use environment variables for sensitive data (API keys, DB credentials)
+- **CRITICAL: Always validate HTML structure** - After making changes to PHP/HTML files, verify all opening tags have matching closing tags. Use automated checking for `<div>`, `<span>`, `<button>`, and other container elements. Mismatched tags cause layout issues and hidden content.
 
 ### Database Operations
 - Database: `scrapeDB` on 192.168.1.210
 - Tables: `articles`, `sources`, `categories`, `article_categories`
 - Always use prepared statements to prevent SQL injection
 - Set timezone to PST (`SET time_zone = '-08:00'`)
-- Test queries before running on production data
+- **Read-only operations allowed without authorization**: Any SELECT queries, DESCRIBE, SHOW TABLES, SHOW COLUMNS, EXPLAIN, and other schema inspection commands can be executed freely for debugging and analysis
+- Test queries before running on production data (applies to INSERT, UPDATE, DELETE, ALTER)
 
 ### AI API Configuration
 - **Primary**: 1min.ai (GPT-4o-mini) via MINAI_API_KEY

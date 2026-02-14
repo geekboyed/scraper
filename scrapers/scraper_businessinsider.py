@@ -253,7 +253,7 @@ Return ONLY the category names separated by commas (up to 3 categories, most rel
 
             # Insert new article
             insert_query = """
-                INSERT INTO articles (source_id, title, url, published_date, summary, `fullText`)
+                INSERT INTO articles (source_id, title, url, published_date, summary, `fullArticle`)
                 VALUES (%s, %s, %s, %s, %s, %s)
             """
 
@@ -263,7 +263,7 @@ Return ONLY the category names separated by commas (up to 3 categories, most rel
                 article_data['url'],
                 article_data.get('date', datetime.now().date()),
                 article_data['summary'],
-                article_data.get('fullText', None)
+                article_data.get('fullArticle', None)
             ))
 
             article_id = cursor.lastrowid
@@ -286,10 +286,13 @@ Return ONLY the category names separated by commas (up to 3 categories, most rel
             print(f"  ✗ Error saving article: {e}")
             return False
 
-    def get_article_id(self, url):
-        """Get article ID by URL"""
+    def get_article_id(self, url, title):
+        """Get article ID by title + source"""
         cursor = self.connection.cursor()
-        cursor.execute("SELECT id FROM articles WHERE url = %s", (url,))
+        cursor.execute("""
+            SELECT id FROM articles
+            WHERE title = %s AND source_id = %s
+        """, (title, self.source_id))
         result = cursor.fetchone()
         cursor.close()
         return result[0] if result else None
@@ -320,7 +323,7 @@ Return ONLY the category names separated by commas (up to 3 categories, most rel
             content = self.get_article_content(article['url'])
 
             # Save full text
-            article['fullText'] = content if content else None
+            article['fullArticle'] = content if content else None
             if content:
                 print(f"  → Full text: {len(content)} characters")
 

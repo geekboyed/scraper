@@ -185,6 +185,35 @@ foreach ($log_files as $log_file) {
     }
 }
 
+// Add database errors - failed article summaries
+require_once 'config.php';
+
+if (isset($conn)) {
+    $result = $conn->query("
+        SELECT a.id, a.title, s.name as source_name, a.scraped_at
+        FROM articles a
+        LEFT JOIN sources s ON a.source_id = s.id
+        WHERE a.isSummaryFailed = 'Y'
+        ORDER BY a.scraped_at DESC
+        LIMIT 50
+    ");
+
+    if ($result) {
+        while ($article = $result->fetch_assoc()) {
+            $errors[] = [
+                'file' => 'Database',
+                'type' => 'Summary Failed',
+                'source' => $article['source_name'] ?? 'Unknown',
+                'description' => 'Article summarization failed - AI could not process content (may be paywall, privacy policy, or corrupted text)',
+                'line' => 'Article: ' . $article['title'],
+                'timestamp' => $article['scraped_at'] ?? 'Unknown',
+                'severity' => 'medium'
+            ];
+        }
+        $result->free();
+    }
+}
+
 // Remove duplicates and limit
 $errors = array_slice(array_unique($errors, SORT_REGULAR), 0, 100);
 

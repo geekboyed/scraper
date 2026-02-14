@@ -4,19 +4,23 @@
  * Displays scraped articles with categories and summaries
  */
 
+// Enable error reporting for debugging
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+
 require_once 'config.php';
 
 // Get filter parameters
-$category_filter = isset($_GET['category']) ? (int)$_GET['category'] : null;
-$source_filter = isset($_GET['source']) ? (int)$_GET['source'] : null;
+$category_filter = isset($_GET['category']) ? (is_array($_GET['category']) ? array_map('intval', $_GET['category']) : [(int)$_GET['category']]) : [];
+$source_filter = isset($_GET['source']) ? (is_array($_GET['source']) ? array_map('intval', $_GET['source']) : [(int)$_GET['source']]) : [];
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
-$summary_filter = isset($_GET['summary']) ? $_GET['summary'] : 'all'; // Default to 'all'
 $date_filter = isset($_GET['date']) ? $_GET['date'] : '1day'; // Default to '1day'
 $page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
 $page_size = isset($_GET['size']) ? (int)$_GET['size'] : 50;
 
 // Build query
-$query = "SELECT a.id, a.title, a.url, a.published_date, a.summary, a.scraped_at, a.fullText, a.hasPaywall,
+$query = "SELECT a.id, a.title, a.url, a.published_date, a.summary, a.scraped_at, a.fullArticle, a.hasPaywall,
           s.name as source_name, s.id as source_id,
           GROUP_CONCAT(c.name ORDER BY c.name SEPARATOR ', ') as categories
           FROM articles a
@@ -28,16 +32,35 @@ $where = [];
 $params = [];
 $types = '';
 
-if ($category_filter) {
-    $where[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a.id AND category_id = ?)";
-    $params[] = $category_filter;
-    $types .= 'i';
+// Tech filter - show only technology categories
+$tech_filter = isset($_GET['tech']) && $_GET['tech'] == '1';
+// Business filter - show only business categories
+$business_filter = isset($_GET['business']) && $_GET['business'] == '1';
+
+if ($tech_filter) {
+    // Technology categories: 2=Technology, 7=Automotive, 8=Media, 16=Crypto, 17=AI&ML, 18=Cybersecurity, 19=Cloud, 20=Hardware, 21=Software, 22=Robotics
+    $where[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a.id AND category_id IN (2, 7, 8, 16, 17, 18, 19, 20, 21, 22))";
+} elseif ($business_filter) {
+    // Business categories: 1=Finance, 3=Retail, 9=Economy, 10=Markets, 11=Leadership, 12=Startups, 13=Global Business, 14=Legal, 15=Labor
+    $where[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a.id AND category_id IN (1, 3, 9, 10, 11, 12, 13, 14, 15))";
+} elseif (!empty($category_filter)) {
+    // Handle multiple category selection
+    $placeholders = implode(',', array_fill(0, count($category_filter), '?'));
+    $where[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a.id AND category_id IN ($placeholders))";
+    foreach ($category_filter as $cat_id) {
+        $params[] = $cat_id;
+        $types .= 'i';
+    }
 }
 
-if ($source_filter) {
-    $where[] = "a.source_id = ?";
-    $params[] = $source_filter;
-    $types .= 'i';
+if (!empty($source_filter)) {
+    // Handle multiple source selection
+    $placeholders = implode(',', array_fill(0, count($source_filter), '?'));
+    $where[] = "a.source_id IN ($placeholders)";
+    foreach ($source_filter as $src_id) {
+        $params[] = $src_id;
+        $types .= 'i';
+    }
 }
 
 if ($search) {
@@ -48,9 +71,8 @@ if ($search) {
     $types .= 'ss';
 }
 
-if ($summary_filter === 'with') {
-    $where[] = "a.summary IS NOT NULL AND a.summary != ''";
-}
+// Always show only summarized articles
+$where[] = "a.summary IS NOT NULL AND a.summary != ''";
 
 if ($date_filter && $date_filter !== 'all') {
     switch ($date_filter) {
@@ -64,10 +86,7 @@ if ($date_filter && $date_filter !== 'all') {
             $where[] = "a.scraped_at >= DATE_SUB(NOW(), INTERVAL 1 MONTH)";
             break;
     }
-} elseif ($summary_filter === 'without') {
-    $where[] = "(a.summary IS NULL OR a.summary = '')";
 }
-// 'all' or any other value shows all articles (no filter)
 
 if (!empty($where)) {
     $query .= " WHERE " . implode(" AND ", $where);
@@ -120,10 +139,13 @@ $cat_params = [];
 $cat_types = '';
 
 // Apply same filters as main query (except category filter)
-if ($source_filter) {
-    $cat_conditions[] = "a2.source_id = ?";
-    $cat_params[] = $source_filter;
-    $cat_types .= 'i';
+if (!empty($source_filter)) {
+    $placeholders = implode(',', array_fill(0, count($source_filter), '?'));
+    $cat_conditions[] = "a2.source_id IN ($placeholders)";
+    foreach ($source_filter as $src_id) {
+        $cat_params[] = $src_id;
+        $cat_types .= 'i';
+    }
 }
 
 if ($search) {
@@ -134,11 +156,8 @@ if ($search) {
     $cat_types .= 'ss';
 }
 
-if ($summary_filter === 'with') {
-    $cat_conditions[] = "a2.summary IS NOT NULL AND a2.summary != ''";
-} elseif ($summary_filter === 'without') {
-    $cat_conditions[] = "(a2.summary IS NULL OR a2.summary = '')";
-}
+// Always show only summarized articles
+$cat_conditions[] = "a2.summary IS NOT NULL AND a2.summary != ''";
 
 if ($date_filter && $date_filter !== 'all') {
     switch ($date_filter) {
@@ -183,10 +202,13 @@ $sources_params = [];
 $sources_types = '';
 
 // Apply same filters as main query (except source filter)
-if ($category_filter) {
-    $sources_conditions[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a2.id AND category_id = ?)";
-    $sources_params[] = $category_filter;
-    $sources_types .= 'i';
+if (!empty($category_filter)) {
+    $placeholders = implode(',', array_fill(0, count($category_filter), '?'));
+    $sources_conditions[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a2.id AND category_id IN ($placeholders))";
+    foreach ($category_filter as $cat_id) {
+        $sources_params[] = $cat_id;
+        $sources_types .= 'i';
+    }
 }
 
 if ($search) {
@@ -197,11 +219,8 @@ if ($search) {
     $sources_types .= 'ss';
 }
 
-if ($summary_filter === 'with') {
-    $sources_conditions[] = "a2.summary IS NOT NULL AND a2.summary != ''";
-} elseif ($summary_filter === 'without') {
-    $sources_conditions[] = "(a2.summary IS NULL OR a2.summary = '')";
-}
+// Always show only summarized articles
+$sources_conditions[] = "a2.summary IS NOT NULL AND a2.summary != ''";
 
 if ($date_filter && $date_filter !== 'all') {
     switch ($date_filter) {
@@ -235,8 +254,10 @@ if (!empty($sources_params)) {
     $sources_result = $conn->query($sources_query);
 }
 
-// Get count of unsummarized articles
-$unsummarized_query = "SELECT COUNT(*) as count FROM articles WHERE summary IS NULL OR summary = ''";
+// Get count of unsummarized articles (excluding failed)
+$unsummarized_query = "SELECT COUNT(*) as count FROM articles
+                       WHERE (summary IS NULL OR summary = '')
+                       AND (isSummaryFailed IS NULL OR isSummaryFailed != 'Y')";
 $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
 ?>
 <!DOCTYPE html>
@@ -368,36 +389,6 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
 
         .btn-secondary:hover {
             background: #5a6268;
-        }
-
-        .toggle-buttons {
-            display: flex;
-            gap: 5px;
-            border: 2px solid #e0e0e0;
-            border-radius: 5px;
-            overflow: hidden;
-        }
-
-        .toggle-btn {
-            padding: 12px 20px;
-            background: white;
-            color: #333;
-            border: none;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 600;
-            transition: all 0.3s;
-            text-decoration: none;
-            display: inline-block;
-        }
-
-        .toggle-btn:hover {
-            background: #f0f0f0;
-        }
-
-        .toggle-btn.active {
-            background: #667eea;
-            color: white;
         }
 
         .btn-success {
@@ -912,11 +903,71 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
         #backToTop:active {
             transform: translateY(-1px);
         }
+
+        /* Filter tooltip on hover */
+        div:hover > .filter-tooltip {
+            opacity: 1 !important;
+            visibility: visible !important;
+        }
     </style>
     <script>
         // Text-to-Speech functionality
         let currentSpeech = null;
         let currentArticleId = null;
+        let preferredVoice = null;
+        let voicesLoaded = false;
+
+        // Load and cache preferred voice
+        function loadPreferredVoice() {
+            const voices = window.speechSynthesis.getVoices();
+            if (voices.length === 0) return null;
+
+            // Try British English female voices
+            let voice = voices.find(v =>
+                v.lang.startsWith('en-GB') &&
+                (v.name.toLowerCase().includes('female') ||
+                 v.name.includes('Samantha') ||
+                 v.name.includes('Kate') ||
+                 v.name.includes('Serena') ||
+                 v.name.includes('Susan'))
+            );
+
+            // Try any British English voice
+            if (!voice) {
+                voice = voices.find(v => v.lang.startsWith('en-GB'));
+            }
+
+            // Try any female-sounding English voice
+            if (!voice) {
+                voice = voices.find(v =>
+                    v.lang.startsWith('en') &&
+                    (v.name.toLowerCase().includes('female') ||
+                     v.name.includes('Samantha') ||
+                     v.name.includes('Kate') ||
+                     v.name.includes('Victoria') ||
+                     v.name.includes('Zira'))
+                );
+            }
+
+            if (voice) {
+                console.log('Selected voice:', voice.name, voice.lang);
+            }
+            return voice;
+        }
+
+        // Initialize voices
+        if (window.speechSynthesis) {
+            // Try to load voices immediately
+            preferredVoice = loadPreferredVoice();
+
+            // Also listen for voiceschanged event
+            window.speechSynthesis.onvoiceschanged = function() {
+                if (!voicesLoaded) {
+                    voicesLoaded = true;
+                    preferredVoice = loadPreferredVoice();
+                }
+            };
+        }
 
         function readAloud(articleId) {
             const btn = event.target;
@@ -967,6 +1018,21 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
             utterance.pitch = 1.0; // Normal pitch
             utterance.volume = 1.0; // Full volume
 
+            // Use cached preferred voice, or try to load it now
+            if (!preferredVoice) {
+                preferredVoice = loadPreferredVoice();
+            }
+
+            if (preferredVoice) {
+                utterance.voice = preferredVoice;
+                utterance.lang = preferredVoice.lang; // Also set lang explicitly
+                console.log('Speaking with:', preferredVoice.name, preferredVoice.lang);
+            } else {
+                // Fallback: set lang to British English even if no specific voice found
+                utterance.lang = 'en-GB';
+                console.log('No preferred voice found, using lang: en-GB');
+            }
+
             // Update button state
             btn.textContent = '⏸️ Stop';
             btn.style.background = '#dc3545';
@@ -980,12 +1046,17 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
                 currentArticleId = null;
             };
 
-            utterance.onerror = function() {
+            utterance.onerror = function(event) {
                 btn.textContent = '🔊 Read Aloud';
                 btn.style.background = '#17a2b8';
                 currentSpeech = null;
                 currentArticleId = null;
-                alert('Error reading text. Please try again.');
+
+                // Don't show error for user-initiated cancellations
+                if (event.error && event.error !== 'canceled' && event.error !== 'interrupted') {
+                    console.error('Speech synthesis error:', event.error);
+                    alert('Error reading text. Please try again.');
+                }
             };
 
             // Speak
@@ -1259,11 +1330,13 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
             html += '</div>';
             html += '<div class="fulltext-content">';
 
-            // Split into paragraphs and format
+            // Split into paragraphs and format, preserving line breaks
             const paragraphs = fullText.split('\n\n');
             paragraphs.forEach(para => {
                 if (para.trim()) {
-                    html += '<p>' + escapeHtml(para.trim()) + '</p>';
+                    // Replace single newlines with <br> tags to preserve line breaks
+                    const formattedPara = escapeHtml(para.trim()).replace(/\n/g, '<br>');
+                    html += '<p>' + formattedPara + '</p>';
                 }
             });
 
@@ -1277,10 +1350,11 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
             document.getElementById('fulltextModal').style.display = 'none';
         }
 
-        // Close modal when clicking outside
+        // Close modals when clicking outside
         window.onclick = function(event) {
             const errorsModal = document.getElementById('errorsModal');
             const fulltextModal = document.getElementById('fulltextModal');
+            const filtersModal = document.getElementById('filtersModal');
 
             if (event.target == errorsModal) {
                 errorsModal.style.display = 'none';
@@ -1288,6 +1362,111 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
             if (event.target == fulltextModal) {
                 fulltextModal.style.display = 'none';
             }
+            if (event.target === filtersModal) {
+                closeFiltersModal();
+            }
+        }
+
+        // Filter Modal Functions
+        function openFiltersModal() {
+            document.getElementById('filtersModal').style.display = 'block';
+            document.body.style.overflow = 'hidden'; // Prevent background scrolling
+            document.getElementById('filterToggleIcon').textContent = '▲';
+        }
+
+        function closeFiltersModal() {
+            document.getElementById('filtersModal').style.display = 'none';
+            document.body.style.overflow = 'auto'; // Restore scrolling
+            document.getElementById('filterToggleIcon').textContent = '▼';
+        }
+
+        function applyFilters() {
+            const params = new URLSearchParams();
+
+            // Collect selected sources
+            const totalSources = document.querySelectorAll('.source-filter').length;
+            const checkedSources = document.querySelectorAll('.source-filter:checked');
+            const sources = Array.from(checkedSources).map(cb => cb.value);
+
+            // Apply source filter only if NOT all are selected
+            if (sources.length > 0 && sources.length < totalSources) {
+                sources.forEach(source => params.append('source[]', source));
+            }
+
+            // Collect selected categories
+            const totalCategories = document.querySelectorAll('.category-filter').length;
+            const checkedCategories = document.querySelectorAll('.category-filter:checked');
+            const categories = Array.from(checkedCategories).map(cb => cb.value);
+
+            // Apply category filter only if NOT all are selected
+            if (categories.length > 0 && categories.length < totalCategories) {
+                categories.forEach(category => params.append('category[]', category));
+            }
+
+            // Get selected date filter
+            const dateFilter = document.querySelector('input[name="date-filter"]:checked');
+            if (dateFilter && dateFilter.value !== '1day') {
+                params.set('date', dateFilter.value);
+            }
+
+            // Build and navigate to URL
+            const url = 'index.php' + (params.toString() ? '?' + params.toString() : '');
+            window.location.href = url;
+        }
+
+        function clearFilters() {
+            // Uncheck all checkboxes
+            document.querySelectorAll('.source-filter, .category-filter').forEach(cb => {
+                cb.checked = false;
+            });
+
+            // Reset date filter to default (1day)
+            const defaultDate = document.querySelector('input[name="date-filter"][value="1day"]');
+            if (defaultDate) {
+                defaultDate.checked = true;
+            }
+
+            // Navigate to clean index
+            window.location.href = 'index.php';
+        }
+
+        // Select/Clear All functions
+        function selectAllSources() {
+            document.querySelectorAll('.source-filter').forEach(cb => {
+                cb.checked = true;
+            });
+        }
+
+        function clearAllSources() {
+            document.querySelectorAll('.source-filter').forEach(cb => {
+                cb.checked = false;
+            });
+        }
+
+        function selectAllCategories() {
+            document.querySelectorAll('.category-filter').forEach(cb => {
+                cb.checked = true;
+            });
+        }
+
+        function clearAllCategories() {
+            document.querySelectorAll('.category-filter').forEach(cb => {
+                cb.checked = false;
+            });
+        }
+
+        // Helper: Click a category to select only that one
+        function selectOnlyCategory(categoryId) {
+            document.querySelectorAll('.category-filter').forEach(cb => {
+                cb.checked = (cb.value == categoryId);
+            });
+        }
+
+        // Helper: Click a source to select only that one
+        function selectOnlySource(sourceId) {
+            document.querySelectorAll('.source-filter').forEach(cb => {
+                cb.checked = (cb.value == sourceId);
+            });
         }
     </script>
 </head>
@@ -1324,149 +1503,243 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
 
         <!-- Search & Filters -->
         <div class="controls" style="flex-direction: column; align-items: stretch;">
-            <!-- Search Bar Row -->
-            <div style="width: 100%; margin-bottom: 15px;">
-                <form method="GET" style="margin: 0; display: flex; gap: 10px; align-items: center;">
-                    <div style="position: relative; width: 50%;">
-                        <input type="text"
-                               id="searchInput"
-                               name="search"
-                               placeholder="🔍 Search articles..."
-                               value="<?php echo htmlspecialchars($search); ?>"
-                               oninput="toggleClearButton()"
-                               style="width: 100%; padding: 18px 45px 18px 15px; font-size: 18px; border: 2px solid #e0e0e0; border-radius: 5px;">
-                        <button type="button" id="clearBtn" onclick="clearSearchInput()"
-                                style="position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
-                                       background: #f0f0f0; border: none; cursor: pointer; font-size: 24px;
-                                       color: #666; padding: 2px 8px; line-height: 1; border-radius: 3px;
-                                       font-weight: bold; display: <?php echo $search ? 'block' : 'none'; ?>;">×</button>
+            <!-- Quick Filter Buttons -->
+            <div style="margin-bottom: 5px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+                <a href="?date=1day"
+                   class="btn"
+                   style="<?php echo (!isset($_GET['tech']) && !isset($_GET['business']) && empty($category_filter)) ? 'background: #667eea; color: white;' : 'background: #f8f9fa; color: #333; border: 2px solid #667eea;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 5px; font-weight: 600; display: inline-block;">
+                    📰 All Articles
+                </a>
+                <a href="?tech=1&date=1day"
+                   class="btn"
+                   style="<?php echo isset($_GET['tech']) ? 'background: #667eea; color: white;' : 'background: #f8f9fa; color: #333; border: 2px solid #667eea;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 5px; font-weight: 600; display: inline-block;">
+                    🖥️ Technology
+                </a>
+                <a href="?business=1&date=1day"
+                   class="btn"
+                   style="<?php echo isset($_GET['business']) ? 'background: #667eea; color: white;' : 'background: #f8f9fa; color: #333; border: 2px solid #667eea;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 5px; font-weight: 600; display: inline-block;">
+                    💼 Business
+                </a>
+
+                <!-- Filter & Search (aligned right) -->
+                <div style="margin-left: auto; display: flex; gap: 8px; align-items: center;">
+                    <!-- Filter Button with Tooltip -->
+                    <div style="position: relative; display: inline-block;">
+                        <button onclick="openFiltersModal()"
+                                style="padding: 12px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 14px; white-space: nowrap;">
+                            🔍 Filters<?php if (!empty($source_filter) || !empty($category_filter)) echo ' (' . (count($source_filter) + count($category_filter)) . ')'; ?>
+                        </button>
+                        <?php if (!empty($source_filter) || !empty($category_filter)): ?>
+                        <div class="filter-tooltip" style="position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); margin-bottom: 8px; background: #333; color: white; padding: 10px 15px; border-radius: 5px; font-size: 12px; white-space: nowrap; opacity: 0; visibility: hidden; transition: opacity 0.2s, visibility 0.2s; z-index: 1000; pointer-events: none;">
+                            <?php
+                            $tooltip_parts = [];
+
+                            // Show source filters
+                            if (!empty($source_filter)) {
+                                $src_ids = implode(',', $source_filter);
+                                $src_result = $conn->query("SELECT name FROM sources WHERE id IN ($src_ids)");
+                                $sources = [];
+                                while ($src = $src_result->fetch_assoc()) {
+                                    $sources[] = htmlspecialchars($src['name']);
+                                }
+                                if (!empty($sources)) {
+                                    $tooltip_parts[] = '<strong>Sources:</strong> ' . implode(', ', $sources);
+                                }
+                            }
+
+                            // Show category filters
+                            if (!empty($category_filter)) {
+                                $cat_ids = implode(',', $category_filter);
+                                $cat_result = $conn->query("SELECT name FROM categories WHERE id IN ($cat_ids)");
+                                $categories = [];
+                                while ($cat = $cat_result->fetch_assoc()) {
+                                    $categories[] = htmlspecialchars($cat['name']);
+                                }
+                                if (!empty($categories)) {
+                                    $tooltip_parts[] = '<strong>Categories:</strong> ' . implode(', ', $categories);
+                                }
+                            }
+
+                            echo implode('<br>', $tooltip_parts);
+                            ?>
+                            <div style="position: absolute; top: 100%; left: 50%; transform: translateX(-50%); width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 6px solid #333;"></div>
+                        </div>
+                        <?php endif; ?>
                     </div>
-                    <button type="submit" class="btn" style="padding: 18px 30px; font-size: 16px;">Search</button>
-                    <?php if ($category_filter): ?>
-                        <input type="hidden" name="category" value="<?php echo $category_filter; ?>">
-                    <?php endif; ?>
-                    <?php if ($source_filter): ?>
-                        <input type="hidden" name="source" value="<?php echo $source_filter; ?>">
-                    <?php endif; ?>
-                    <?php if ($summary_filter): ?>
-                        <input type="hidden" name="summary" value="<?php echo $summary_filter; ?>">
-                    <?php endif; ?>
-                    <?php if ($date_filter && $date_filter !== 'all'): ?>
-                        <input type="hidden" name="date" value="<?php echo $date_filter; ?>">
-                    <?php endif; ?>
-                </form>
-            </div>
 
-            <!-- Filters Row -->
-            <div style="display: flex; gap: 15px; flex-wrap: wrap; align-items: center;">
-            <div class="category-filter">
-                <form method="GET" style="margin: 0;" id="sourceForm">
-                    <select name="source" onchange="document.getElementById('sourceForm').submit()">
-                        <option value="">All Sources</option>
-                        <?php while ($src = $sources_result->fetch_assoc()): ?>
-                            <option value="<?php echo $src['id']; ?>"
-                                    <?php echo $source_filter == $src['id'] ? 'selected' : ''; ?>>
-                                <?php echo htmlspecialchars($src['name']); ?> (<?php echo $src['article_count']; ?>)
-                            </option>
-                        <?php endwhile; ?>
-                    </select>
-                    <input type="hidden" name="summary" value="<?php echo $summary_filter; ?>">
-                    <?php if ($date_filter && $date_filter !== 'all'): ?>
-                        <input type="hidden" name="date" value="<?php echo $date_filter; ?>">
-                    <?php endif; ?>
-                    <?php if ($category_filter): ?>
-                        <input type="hidden" name="category" value="<?php echo $category_filter; ?>">
-                    <?php endif; ?>
-                    <?php if ($search): ?>
-                        <input type="hidden" name="search" value="<?php echo htmlspecialchars($search); ?>">
-                    <?php endif; ?>
-                </form>
-            </div>
-
-            <div class="category-filter">
-                <form method="GET" style="margin: 0;" id="categoryForm">
-                    <select name="category" onchange="document.getElementById('categoryForm').submit()">
-                        <option value="">All Categories</option>
-                        <?php
-                        $categories_result->data_seek(0); // Reset pointer
-                        while ($cat = $categories_result->fetch_assoc()):
-                        ?>
-                            <option value="<?php echo $cat['id']; ?>"
-                                    <?php echo $category_filter == $cat['id'] ? 'selected' : ''; ?>>
-                                <?php echo htmlspecialchars($cat['name']); ?> (<?php echo $cat['article_count']; ?>)
-                            </option>
-                        <?php endwhile; ?>
-                    </select>
-                    <input type="hidden" name="summary" value="<?php echo $summary_filter; ?>">
-                    <?php if ($date_filter && $date_filter !== 'all'): ?>
-                        <input type="hidden" name="date" value="<?php echo $date_filter; ?>">
-                    <?php endif; ?>
-                    <?php if ($source_filter): ?>
-                        <input type="hidden" name="source" value="<?php echo $source_filter; ?>">
-                    <?php endif; ?>
-                    <?php if ($search): ?>
-                        <input type="hidden" name="search" value="<?php echo htmlspecialchars($search); ?>">
-                    <?php endif; ?>
-                </form>
-            </div>
-
-            <div class="category-filter">
-                <form method="GET" style="margin: 0;" id="dateForm">
-                    <select name="date" onchange="document.getElementById('dateForm').submit()">
-                        <option value="all" <?php echo $date_filter === 'all' ? 'selected' : ''; ?>>All Time</option>
-                        <option value="1day" <?php echo $date_filter === '1day' ? 'selected' : ''; ?>>Last 24 Hours</option>
-                        <option value="1week" <?php echo $date_filter === '1week' ? 'selected' : ''; ?>>Last Week</option>
-                        <option value="1month" <?php echo $date_filter === '1month' ? 'selected' : ''; ?>>Last Month</option>
-                    </select>
-                    <input type="hidden" name="summary" value="<?php echo $summary_filter; ?>">
-                    <?php if ($category_filter): ?>
-                        <input type="hidden" name="category" value="<?php echo $category_filter; ?>">
-                    <?php endif; ?>
-                    <?php if ($source_filter): ?>
-                        <input type="hidden" name="source" value="<?php echo $source_filter; ?>">
-                    <?php endif; ?>
-                    <?php if ($search): ?>
-                        <input type="hidden" name="search" value="<?php echo htmlspecialchars($search); ?>">
-                    <?php endif; ?>
-                </form>
-            </div>
-
-            <div class="toggle-buttons">
-                <?php
-                $query_params = [];
-                if ($category_filter) $query_params['category'] = $category_filter;
-                if ($source_filter) $query_params['source'] = $source_filter;
-                if ($search) $query_params['search'] = $search;
-                if ($date_filter && $date_filter !== 'all') $query_params['date'] = $date_filter;
-
-                function buildFilterUrl($params, $summary_val) {
-                    $params['summary'] = $summary_val;
-                    return 'index.php?' . http_build_query($params);
-                }
-                ?>
-                <a href="<?php echo buildFilterUrl($query_params, 'all'); ?>"
-                   class="toggle-btn <?php echo $summary_filter === 'all' ? 'active' : ''; ?>">
-                    All Articles
-                </a>
-                <a href="<?php echo buildFilterUrl($query_params, 'with'); ?>"
-                   class="toggle-btn <?php echo $summary_filter === 'with' ? 'active' : ''; ?>">
-                    With Summary
-                </a>
-            </div>
-
-            <?php if ($category_filter || $source_filter || $search || $summary_filter !== 'all' || $date_filter !== 'all'): ?>
-                <a href="index.php" class="btn btn-secondary">Clear Filters</a>
-            <?php endif; ?>
+                    <!-- Search Form -->
+                    <form method="GET" style="display: flex; gap: 8px; align-items: center; margin: 0;">
+                        <input type="text"
+                               name="search"
+                               placeholder="Search articles..."
+                               value="<?php echo htmlspecialchars($search); ?>"
+                               style="padding: 12px 15px; border: 2px solid #e0e0e0; border-radius: 5px; font-size: 14px; width: 250px; outline: none;">
+                        <button type="submit"
+                                style="padding: 12px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 14px; white-space: nowrap;">
+                            🔍 Search
+                        </button>
+                        <?php foreach ($category_filter as $cat_id): ?>
+                            <input type="hidden" name="category[]" value="<?php echo $cat_id; ?>">
+                        <?php endforeach; ?>
+                        <?php foreach ($source_filter as $src_id): ?>
+                            <input type="hidden" name="source[]" value="<?php echo $src_id; ?>">
+                        <?php endforeach; ?>
+                        <?php if ($date_filter && $date_filter !== 'all'): ?>
+                            <input type="hidden" name="date" value="<?php echo $date_filter; ?>">
+                        <?php endif; ?>
+                    </form>
+                </div>
             </div>
         </div>
+
+        <!-- Filters Modal (Outside of controls container) -->
+            <div id="filtersModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; overflow-y: auto;">
+                <div onclick="event.stopPropagation()" style="background: white; margin: 30px auto; max-width: 1200px; border-radius: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); position: relative;">
+                    <!-- Modal Header -->
+                    <div style="padding: 20px 25px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 10px 10px 0 0; display: flex; justify-content: space-between; align-items: center;">
+                        <h2 style="color: white; margin: 0;">🔍 Filter Articles</h2>
+                        <button onclick="closeFiltersModal()" style="background: transparent; border: none; color: white; font-size: 32px; cursor: pointer; line-height: 1; padding: 0; width: 32px; height: 32px;">&times;</button>
+                    </div>
+
+                    <!-- Modal Body -->
+                    <div style="padding: 25px;">
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 25px;">
+
+                        <!-- Sources Checkboxes -->
+                        <div>
+                            <h3 style="margin-bottom: 10px; font-size: 14px; font-weight: 600; color: #667eea;">SOURCES</h3>
+                            <div style="margin-bottom: 10px; display: flex; gap: 5px;">
+                                <button onclick="selectAllSources(); return false;" style="padding: 5px 10px; background: #667eea; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 12px; font-weight: 600;">
+                                    Select All
+                                </button>
+                                <button onclick="clearAllSources(); return false;" style="padding: 5px 10px; background: #6c757d; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 12px; font-weight: 600;">
+                                    Clear All
+                                </button>
+                            </div>
+                            <?php
+                            $sources_result->data_seek(0);
+                            while ($src = $sources_result->fetch_assoc()):
+                            ?>
+                                <label style="display: block; margin-bottom: 8px; cursor: pointer;">
+                                    <input type="checkbox" class="source-filter" value="<?php echo $src['id']; ?>"
+                                           <?php echo (empty($source_filter) || in_array($src['id'], $source_filter)) ? 'checked' : ''; ?>
+                                           style="margin-right: 8px;">
+                                    <?php echo htmlspecialchars($src['name']); ?> <span style="color: #999;">(<?php echo $src['article_count']; ?>)</span>
+                                </label>
+                            <?php endwhile; ?>
+                        </div>
+
+                        <!-- Categories Checkboxes -->
+                        <div>
+                            <h3 style="margin-bottom: 10px; font-size: 14px; font-weight: 600; color: #667eea;">CATEGORIES</h3>
+                            <div style="margin-bottom: 10px; display: flex; gap: 5px;">
+                                <button onclick="selectAllCategories(); return false;" style="padding: 5px 10px; background: #667eea; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 12px; font-weight: 600;">
+                                    Select All
+                                </button>
+                                <button onclick="clearAllCategories(); return false;" style="padding: 5px 10px; background: #6c757d; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 12px; font-weight: 600;">
+                                    Clear All
+                                </button>
+                            </div>
+                            <div>
+                            <?php
+                            $categories_result->data_seek(0);
+                            while ($cat = $categories_result->fetch_assoc()):
+                            ?>
+                                <label style="display: block; margin-bottom: 8px; cursor: pointer; white-space: nowrap;">
+                                    <input type="checkbox" class="category-filter" value="<?php echo $cat['id']; ?>"
+                                           <?php echo (empty($category_filter) || in_array($cat['id'], $category_filter)) ? 'checked' : ''; ?>
+                                           style="margin-right: 8px;">
+                                    <?php echo htmlspecialchars($cat['name']); ?> <span style="color: #999;">(<?php echo $cat['article_count']; ?>)</span>
+                                    <a href="javascript:void(0)" onclick="selectOnlyCategory(<?php echo $cat['id']; ?>); event.stopPropagation();"
+                                       style="margin-left: 5px; font-size: 11px; color: #667eea; text-decoration: none; font-weight: 600;">only</a>
+                                </label>
+                            <?php endwhile; ?>
+                            </div>
+                        </div>
+
+                        <!-- Time Frame Radio Buttons -->
+                        <div>
+                            <h3 style="margin-bottom: 10px; font-size: 14px; font-weight: 600; color: #667eea;">TIME FRAME</h3>
+                            <label style="display: block; margin-bottom: 8px; cursor: pointer;">
+                                <input type="radio" name="date-filter" value="1day"
+                                       <?php echo (!$date_filter || $date_filter == '1day') ? 'checked' : ''; ?>
+                                       style="margin-right: 8px;">
+                                Last 24 Hours
+                            </label>
+                            <label style="display: block; margin-bottom: 8px; cursor: pointer;">
+                                <input type="radio" name="date-filter" value="1week"
+                                       <?php echo ($date_filter == '1week') ? 'checked' : ''; ?>
+                                       style="margin-right: 8px;">
+                                Last Week
+                            </label>
+                            <label style="display: block; margin-bottom: 8px; cursor: pointer;">
+                                <input type="radio" name="date-filter" value="1month"
+                                       <?php echo ($date_filter == '1month') ? 'checked' : ''; ?>
+                                       style="margin-right: 8px;">
+                                Last Month
+                            </label>
+                            <label style="display: block; margin-bottom: 8px; cursor: pointer;">
+                                <input type="radio" name="date-filter" value="all"
+                                       <?php echo ($date_filter == 'all') ? 'checked' : ''; ?>
+                                       style="margin-right: 8px;">
+                                All Time
+                            </label>
+                        </div>
+
+                        <!-- Search Bar -->
+                        <div>
+                            <h3 style="margin-bottom: 10px; font-size: 14px; font-weight: 600; color: #667eea;">SEARCH</h3>
+                            <form method="GET" style="margin: 0;">
+                                <div style="position: relative; margin-bottom: 10px;">
+                                    <input type="text"
+                                           id="searchInput"
+                                           name="search"
+                                           placeholder="🔍 Search articles..."
+                                           value="<?php echo htmlspecialchars($search); ?>"
+                                           oninput="toggleClearButton()"
+                                           style="width: 100%; padding: 10px 35px 10px 10px; font-size: 14px; border: 2px solid #e0e0e0; border-radius: 5px;">
+                                    <button type="button" id="clearBtn" onclick="clearSearchInput()"
+                                            style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+                                                   background: #f0f0f0; border: none; cursor: pointer; font-size: 20px;
+                                                   color: #666; padding: 2px 6px; line-height: 1; border-radius: 3px;
+                                                   font-weight: bold; display: <?php echo $search ? 'block' : 'none'; ?>;">×</button>
+                                </div>
+                                <button type="submit" class="btn" style="width: 100%; padding: 10px; font-size: 14px; background: #667eea; color: white;">
+                                    Search
+                                </button>
+                                <?php foreach ($category_filter as $cat_id): ?>
+                                    <input type="hidden" name="category[]" value="<?php echo $cat_id; ?>">
+                                <?php endforeach; ?>
+                                <?php foreach ($source_filter as $src_id): ?>
+                                    <input type="hidden" name="source[]" value="<?php echo $src_id; ?>">
+                                <?php endforeach; ?>
+                                <?php if ($date_filter && $date_filter !== 'all'): ?>
+                                    <input type="hidden" name="date" value="<?php echo $date_filter; ?>">
+                                <?php endif; ?>
+                            </form>
+                        </div>
+
+                    </div>
+                    </div>
+
+                    <!-- Modal Footer -->
+                    <div style="padding: 20px 25px; background: #f8f9fa; border-radius: 0 0 10px 10px; display: flex; gap: 10px; justify-content: flex-end; border-top: 1px solid #e0e0e0;">
+                        <button onclick="clearFilters()" style="padding: 12px 25px; background: #6c757d; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 14px;">
+                            Clear All Filters
+                        </button>
+                        <button onclick="applyFilters()" style="padding: 12px 25px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 14px;">
+                            Apply Filters
+                        </button>
+                    </div>
+                </div>
+            </div>
 
         <?php
         // Pagination helper function and params
         $query_params = [];
-        if ($category_filter) $query_params['category'] = $category_filter;
-        if ($source_filter) $query_params['source'] = $source_filter;
+        if (!empty($category_filter)) $query_params['category'] = $category_filter;
+        if (!empty($source_filter)) $query_params['source'] = $source_filter;
         if ($search) $query_params['search'] = $search;
-        if ($summary_filter) $query_params['summary'] = $summary_filter;
         if ($date_filter && $date_filter !== 'all') $query_params['date'] = $date_filter;
         if ($page_size != 50) $query_params['size'] = $page_size;
 
@@ -1479,7 +1752,7 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
         ?>
 
         <!-- Combined Stats & Pagination -->
-        <div class="pagination" style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px; border-bottom: 1px solid #e0e0e0; padding-bottom: 15px; margin-bottom: 25px;">
+        <div class="pagination" style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px; border-bottom: 1px solid #e0e0e0; padding-bottom: 10px; margin-bottom: 10px;">
             <!-- Stats -->
             <div style="font-size: 14px; color: #666;">
                 Showing <?php echo ($offset + 1); ?>-<?php echo min($offset + $result->num_rows, $total_articles); ?>
@@ -1541,17 +1814,14 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
                         <option value="100" <?php echo $page_size == 100 ? 'selected' : ''; ?>>100</option>
                         <option value="200" <?php echo $page_size == 200 ? 'selected' : ''; ?>>200</option>
                     </select>
-                    <?php if ($category_filter): ?>
-                        <input type="hidden" name="category" value="<?php echo $category_filter; ?>">
-                    <?php endif; ?>
-                    <?php if ($source_filter): ?>
-                        <input type="hidden" name="source" value="<?php echo $source_filter; ?>">
-                    <?php endif; ?>
+                    <?php foreach ($category_filter as $cat_id): ?>
+                        <input type="hidden" name="category[]" value="<?php echo $cat_id; ?>">
+                    <?php endforeach; ?>
+                    <?php foreach ($source_filter as $src_id): ?>
+                        <input type="hidden" name="source[]" value="<?php echo $src_id; ?>">
+                    <?php endforeach; ?>
                     <?php if ($search): ?>
                         <input type="hidden" name="search" value="<?php echo htmlspecialchars($search); ?>">
-                    <?php endif; ?>
-                    <?php if ($summary_filter): ?>
-                        <input type="hidden" name="summary" value="<?php echo $summary_filter; ?>">
                     <?php endif; ?>
                     <?php if ($date_filter && $date_filter !== 'all'): ?>
                         <input type="hidden" name="date" value="<?php echo $date_filter; ?>">
@@ -1573,11 +1843,7 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
                         <div class="article-header">
                             <div class="article-title">
                                 <h2>
-                                    <a href="<?php echo htmlspecialchars($row['url']); ?>"
-                                       target="_blank"
-                                       rel="noopener noreferrer">
-                                        <?php echo htmlspecialchars($row['title']); ?>
-                                    </a>
+                                    <?php echo htmlspecialchars($row['title']); ?>
                                     <?php if ($row['source_name']): ?>
                                         <span class="source-badge"><?php echo htmlspecialchars($row['source_name']); ?></span>
                                     <?php endif; ?>
@@ -1602,7 +1868,7 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
                                     <button class="btn-read-summary" onclick="readAloud(<?php echo $row['id']; ?>)" style="background: #17a2b8;">
                                         🔊 Read Aloud
                                     </button>
-                                    <?php if ($row['fullText'] && trim($row['fullText']) != ''): ?>
+                                    <?php if ($row['fullArticle'] && trim($row['fullArticle']) != ''): ?>
                                     <button class="btn-read-summary" onclick="showFullText(<?php echo $row['id']; ?>)" style="background: #6f42c1;">
                                         📄 Full Text
                                     </button>
@@ -1628,12 +1894,12 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
                             <div id="summary-<?php echo $row['id']; ?>" class="article-summary summary-hidden">
                                 <?php echo nl2br(htmlspecialchars($row['summary'])); ?>
                             </div>
-                            <?php if ($row['fullText'] && trim($row['fullText']) != ''): ?>
+                            <?php if ($row['fullArticle'] && trim($row['fullArticle']) != ''): ?>
                             <div id="fulltext-<?php echo $row['id']; ?>" style="display: none;"
                                  data-title="<?php echo htmlspecialchars($row['title']); ?>"
                                  data-url="<?php echo htmlspecialchars($row['url']); ?>"
                                  data-source="<?php echo htmlspecialchars($row['source_name']); ?>">
-                                <?php echo htmlspecialchars($row['fullText']); ?>
+                                <?php echo htmlspecialchars($row['fullArticle']); ?>
                             </div>
                             <?php endif; ?>
                         <?php else: ?>
@@ -1722,17 +1988,14 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
                         <option value="100" <?php echo $page_size == 100 ? 'selected' : ''; ?>>100</option>
                         <option value="200" <?php echo $page_size == 200 ? 'selected' : ''; ?>>200</option>
                     </select>
-                    <?php if ($category_filter): ?>
-                        <input type="hidden" name="category" value="<?php echo $category_filter; ?>">
-                    <?php endif; ?>
-                    <?php if ($source_filter): ?>
-                        <input type="hidden" name="source" value="<?php echo $source_filter; ?>">
-                    <?php endif; ?>
+                    <?php foreach ($category_filter as $cat_id): ?>
+                        <input type="hidden" name="category[]" value="<?php echo $cat_id; ?>">
+                    <?php endforeach; ?>
+                    <?php foreach ($source_filter as $src_id): ?>
+                        <input type="hidden" name="source[]" value="<?php echo $src_id; ?>">
+                    <?php endforeach; ?>
                     <?php if ($search): ?>
                         <input type="hidden" name="search" value="<?php echo htmlspecialchars($search); ?>">
-                    <?php endif; ?>
-                    <?php if ($summary_filter): ?>
-                        <input type="hidden" name="summary" value="<?php echo $summary_filter; ?>">
                     <?php endif; ?>
                     <?php if ($date_filter && $date_filter !== 'all'): ?>
                         <input type="hidden" name="date" value="<?php echo $date_filter; ?>">

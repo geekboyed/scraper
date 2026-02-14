@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 import html
 import time
 
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
 class MarketWatchMultiRSSScraper:
     def __init__(self):
@@ -121,8 +121,11 @@ class MarketWatchMultiRSSScraper:
         try:
             cursor = self.connection.cursor()
 
-            # Check if article already exists
-            cursor.execute("SELECT id FROM articles WHERE url = %s", (article_data['url'],))
+            # Check for duplicates by title + source_id
+            cursor.execute("""
+                SELECT id FROM articles
+                WHERE title = %s AND source_id = %s
+            """, (article_data['title'], self.source_id))
 
             if cursor.fetchone():
                 cursor.close()

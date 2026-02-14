@@ -13,8 +13,11 @@ from mysql.connector import Error
 from dotenv import load_dotenv
 import re
 import json
+import requests
+from xml.etree import ElementTree as ET
+import html as html_module
 
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
 class CurlScraper:
     def __init__(self, source_id=None, source_url=None):
@@ -25,7 +28,11 @@ class CurlScraper:
             'host': os.getenv('DB_HOST'),
             'database': os.getenv('DB_NAME'),
             'user': os.getenv('DB_USER'),
-            'password': os.getenv('DB_PASS')
+            'password': os.getenv('DB_PASS'),
+            'connect_timeout': 10,  # Connection timeout in seconds
+            'autocommit': False,    # Explicit commit control
+            'pool_size': 1,         # Single connection per scraper
+            'pool_reset_session': True
         }
 
         self.connection = None
@@ -102,6 +109,71 @@ class CurlScraper:
         ]
 
         return any(re.search(pattern, href) for pattern in article_patterns)
+
+    def scrape_rss_feed(self, rss_url):
+        """Scrape RSS/Atom feed (for sources like The Verge)"""
+        try:
+            print(f"\n🔍 Scraping RSS feed...")
+
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+                'Referer': self.base_url
+            }
+
+            response = requests.get(rss_url, headers=headers, timeout=15)
+            response.raise_for_status()
+
+            root = ET.fromstring(response.content)
+
+            articles = []
+
+            # Check if Atom or RSS
+            if root.tag.endswith('feed'):  # Atom feed
+                ns = {'atom': 'http://www.w3.org/2005/Atom'}
+                entries = root.findall('.//atom:entry', ns)
+
+                for entry in entries[:20]:
+                    title_elem = entry.find('atom:title', ns)
+                    link_elem = entry.find("atom:link[@rel='alternate']", ns)
+
+                    if title_elem is not None and link_elem is not None:
+                        title = html_module.unescape(title_elem.text or '')
+                        url = link_elem.get('href', '')
+
+                        # Clean title
+                        title = re.sub(r'<!\[CDATA\[(.*?)\]\]>', r'\1', title)
+                        title = re.sub(r'<[^>]+>', '', title).strip()
+
+                        if title and url:
+                            articles.append({
+                                'title': title[:500],
+                                'url': url[:500],
+                                'date': datetime.now().date()
+                            })
+
+            else:  # RSS feed
+                for item in root.findall('.//item'):
+                    title_elem = item.find('title')
+                    link_elem = item.find('link')
+
+                    if title_elem is not None and link_elem is not None:
+                        title = html_module.unescape(title_elem.text or '')
+                        url = link_elem.text
+
+                        if title and url:
+                            articles.append({
+                                'title': title[:500],
+                                'url': url[:500],
+                                'date': datetime.now().date()
+                            })
+
+            print(f"✓ Found {len(articles)} articles")
+            return articles
+
+        except Exception as e:
+            print(f"✗ RSS fetch error: {e}")
+            return []
 
     def scrape_homepage(self):
         """Scrape using curl then parse"""
@@ -210,17 +282,19 @@ class CurlScraper:
         try:
             cursor = self.connection.cursor()
 
+            # Check for duplicates by title + source_id
             cursor.execute("""
-                SELECT id FROM articles WHERE url = %s
-            """, (article_data['url'],))
+                SELECT id FROM articles
+                WHERE title = %s AND source_id = %s
+            """, (article_data['title'], self.source_id))
 
             if cursor.fetchone():
                 cursor.close()
                 return 'skipped'
 
             cursor.execute("""
-                INSERT INTO articles (source_id, title, url, published_date)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO articles (source_id, title, url, published_date, scraped_at)
+                VALUES (%s, %s, %s, %s, NOW())
             """, (
                 self.source_id,
                 article_data['title'],
@@ -286,7 +360,13 @@ class CurlScraper:
             self.source_id = source['id']
             self.base_url = source['url']
 
-            articles = self.scrape_homepage()
+            # Use RSS for The Verge and VentureBeat
+            if source['id'] == 12:  # The Verge
+                articles = self.scrape_rss_feed('https://www.theverge.com/rss/index.xml')
+            elif source['id'] == 13:  # VentureBeat
+                articles = self.scrape_rss_feed('https://venturebeat.com/feed/')
+            else:
+                articles = self.scrape_homepage()
 
             if not articles:
                 continue

@@ -106,21 +106,89 @@ class ParallelSummarizer:
         print(f"✓ Loaded {len(self.categories_cache)} categories")
 
     def get_unsummarized_articles(self, limit=10):
-        """Get articles that don't have summaries yet from enabled sources (excluding previously failed)"""
+        """Get articles that need summaries, including failed articles eligible for retry with exponential backoff"""
         cursor = self.connection.cursor(dictionary=True)
         cursor.execute("""
-            SELECT a.id, a.title, a.url
+            SELECT a.id, a.title, a.url, a.fullArticle, a.summary_retry_count
             FROM articles a
             LEFT JOIN sources s ON a.source_id = s.id
             WHERE (a.summary IS NULL OR a.summary = '')
-            AND (a.isSummaryFailed IS NULL OR a.isSummaryFailed != 'Y')
             AND (s.enabled = 1 OR s.id IS NULL)
+            AND (
+                -- Never attempted or not marked as failed
+                (a.isSummaryFailed IS NULL OR a.isSummaryFailed != 'Y')
+                OR
+                -- Failed but eligible for retry based on exponential backoff
+                (a.isSummaryFailed = 'Y' AND (
+                    -- Retry 1: after 1 hour (retry_count = 1)
+                    (a.summary_retry_count = 1 AND a.summary_last_attempt < DATE_SUB(NOW(), INTERVAL 1 HOUR))
+                    OR
+                    -- Retry 2: after 6 hours (retry_count = 2)
+                    (a.summary_retry_count = 2 AND a.summary_last_attempt < DATE_SUB(NOW(), INTERVAL 6 HOUR))
+                    OR
+                    -- Retry 3: after 24 hours (retry_count = 3)
+                    (a.summary_retry_count = 3 AND a.summary_last_attempt < DATE_SUB(NOW(), INTERVAL 24 HOUR))
+                    OR
+                    -- Retry 4+: after 7 days (retry_count >= 4)
+                    (a.summary_retry_count >= 4 AND a.summary_last_attempt < DATE_SUB(NOW(), INTERVAL 7 DAY))
+                ))
+            )
             ORDER BY a.scraped_at DESC
             LIMIT %s
         """, (limit,))
         articles = cursor.fetchall()
         cursor.close()
         return articles
+
+    def get_article_from_google_cache(self, url):
+        """Fetch article content from Google Cache as last resort"""
+        try:
+            # Google Cache URL format
+            cache_url = f"https://webcache.googleusercontent.com/search?q=cache:{url}"
+
+            response = requests.get(cache_url, headers=self.headers, timeout=20)
+            response.raise_for_status()
+
+            soup = BeautifulSoup(response.content, 'html.parser')
+
+            # Remove script, style, and navigation elements
+            for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
+                element.decompose()
+
+            content = ""
+
+            # Method 1: Look for article tag
+            article_body = soup.find('article')
+            if article_body:
+                paragraphs = article_body.find_all('p')
+                content = '\n\n'.join([p.get_text(strip=True) for p in paragraphs[:40]])
+
+            # Method 2: Look for main content containers
+            if not content or len(content) < 500:
+                containers = soup.find_all(['div', 'section', 'main'], class_=lambda x: x and any(
+                    term in str(x).lower() for term in ['content', 'article', 'post', 'body', 'text', 'story']
+                ))
+                for container in containers[:8]:
+                    paragraphs = container.find_all('p')
+                    if paragraphs:
+                        content = '\n\n'.join([p.get_text(strip=True) for p in paragraphs[:40]])
+                        if len(content) > 500:
+                            break
+
+            # Method 3: Get all substantial paragraphs
+            if not content or len(content) < 500:
+                all_paragraphs = soup.find_all('p')
+                good_paragraphs = [
+                    p.get_text(strip=True)
+                    for p in all_paragraphs
+                    if len(p.get_text(strip=True)) > 50
+                ]
+                content = '\n\n'.join(good_paragraphs[:40])
+
+            return content[:10000] if content else ""
+
+        except Exception as e:
+            return ""
 
     def get_article_content_playwright(self, url):
         """Fetch article content using Playwright (for JavaScript-rendered pages)"""
@@ -161,7 +229,7 @@ class ParallelSummarizer:
                 article_body = soup.find('article')
                 if article_body:
                     paragraphs = article_body.find_all('p')
-                    content = ' '.join([p.get_text(strip=True) for p in paragraphs[:40]])
+                    content = '\n\n'.join([p.get_text(strip=True) for p in paragraphs[:40]])
 
                 # Method 2: Look for main content containers
                 if not content or len(content) < 500:
@@ -171,7 +239,7 @@ class ParallelSummarizer:
                     for container in containers[:8]:
                         paragraphs = container.find_all('p')
                         if paragraphs:
-                            content = ' '.join([p.get_text(strip=True) for p in paragraphs[:40]])
+                            content = '\n\n'.join([p.get_text(strip=True) for p in paragraphs[:40]])
                             if len(content) > 500:
                                 break
 
@@ -183,7 +251,7 @@ class ParallelSummarizer:
                         for p in all_paragraphs
                         if len(p.get_text(strip=True)) > 50
                     ]
-                    content = ' '.join(good_paragraphs[:40])
+                    content = '\n\n'.join(good_paragraphs[:40])
 
                 return content[:10000] if content else ""
 
@@ -212,7 +280,7 @@ class ParallelSummarizer:
             article_body = soup.find('article')
             if article_body:
                 paragraphs = article_body.find_all('p')
-                content = ' '.join([p.get_text(strip=True) for p in paragraphs[:40]])
+                content = '\n\n'.join([p.get_text(strip=True) for p in paragraphs[:40]])
 
             # Method 2: Look for main content containers
             if not content or len(content) < 500:
@@ -222,7 +290,7 @@ class ParallelSummarizer:
                 for container in containers[:8]:
                     paragraphs = container.find_all('p')
                     if paragraphs:
-                        content = ' '.join([p.get_text(strip=True) for p in paragraphs[:40]])
+                        content = '\n\n'.join([p.get_text(strip=True) for p in paragraphs[:40]])
                         if len(content) > 500:
                             break
 
@@ -235,12 +303,17 @@ class ParallelSummarizer:
                     for p in all_paragraphs
                     if len(p.get_text(strip=True)) > 50
                 ]
-                content = ' '.join(good_paragraphs[:40])
+                content = '\n\n'.join(good_paragraphs[:40])
 
             # If still no content, try Playwright as backup (for JavaScript-rendered pages)
             if not content or len(content) < 100:
                 print(f"  → Trying Playwright backup...")
                 content = self.get_article_content_playwright(url)
+
+            # If Playwright failed, try Google Cache as last resort
+            if not content or len(content) < 100:
+                print(f"  → Trying Google Cache backup...")
+                content = self.get_article_from_google_cache(url)
 
             # Return extensive content for comprehensive summaries (200+ words needs 1500+ words input)
             return content[:10000] if content else ""
@@ -249,7 +322,14 @@ class ParallelSummarizer:
             print(f"  ⚠ Content fetch error: {str(e)[:50]}")
             # Try Playwright as backup
             print(f"  → Trying Playwright backup...")
-            return self.get_article_content_playwright(url)
+            content = self.get_article_content_playwright(url)
+
+            # If Playwright failed, try Google Cache as last resort
+            if not content or len(content) < 100:
+                print(f"  → Trying Google Cache backup...")
+                content = self.get_article_from_google_cache(url)
+
+            return content
 
     def call_minai(self, prompt, max_tokens=200):
         """Call 1min.ai API (using GPT-4o-mini)"""
@@ -423,13 +503,31 @@ Write a summary (200-300 words):"""
             if result:
                 # Check for AI failure patterns
                 failure_patterns = [
-                    'I apologize, but the provided article',
-                    'I apologize, but I cannot',
+                    'I apologize, but',
                     'I cannot provide a summary',
+                    'I cannot create a summary',
+                    'cannot be created',
+                    'cannot be generated',
                     'does not contain substantial information',
                     'appears to be incomplete',
+                    'appears to be corrupted',
+                    'appears to be a privacy policy',
                     'insufficient information',
-                    'privacy policy and consent form'
+                    'privacy policy and consent form',
+                    'privacy policy or consent',
+                    'consent form',
+                    'corrupted or unreadable',
+                    'article content appears to be',
+                    'article text appears to be',
+                    'provided text appears to be',
+                    'provided text is not',
+                    'text is not the article',
+                    'is not the article content',
+                    'article content is absent',
+                    'actual article content is absent',
+                    'without the actual article',
+                    'article content is corrupted',
+                    'content is corrupted'
                 ]
 
                 if any(pattern.lower() in result.lower() for pattern in failure_patterns):
@@ -492,6 +590,11 @@ Return ONLY category names separated by commas (up to 3):"""
             return False
 
         content_lower = content.lower()
+
+        # CNBC Versant paywall blocker
+        if 'this site is now part ofversant' in content_lower or 'part of versant' in content_lower:
+            return True
+
         paywall_patterns = [
             'subscribe to read', 'subscribers only', 'subscriber exclusive',
             'premium content', 'create a free account', 'sign in to continue',
@@ -511,24 +614,39 @@ Return ONLY category names separated by commas (up to 3):"""
         return False
 
     def update_article(self, article_id, summary, categories, fulltext=None):
-        """Update article with summary, categories, and fullText"""
+        """Update article with summary, categories, and fullArticle"""
         try:
             with self.db_lock:
                 conn = mysql.connector.connect(**self.db_config)
                 cursor = conn.cursor()
+                cursor.execute("SET time_zone = '-08:00'")
 
                 # Detect paywall
                 has_paywall = 'Y' if fulltext and self.has_paywall(fulltext) else 'N'
 
-                # Update summary and fullText with success tracking
-                if fulltext:
+                # If paywall detected, clear summary and fullArticle, mark as failed
+                if has_paywall == 'Y':
+                    cursor.execute("""
+                        UPDATE articles
+                        SET summary = NULL,
+                            `fullArticle` = NULL,
+                            hasPaywall = 'Y',
+                            summary_date = NULL,
+                            isSummaryFailed = 'Y'
+                        WHERE id = %s
+                    """, (article_id,))
+                    print(f"  ⚠ Paywall detected - cleared content and marked as failed")
+                # Update summary and fullArticle with success tracking
+                elif fulltext:
                     cursor.execute("""
                         UPDATE articles
                         SET summary = %s,
-                            `fullText` = %s,
+                            `fullArticle` = %s,
                             hasPaywall = %s,
                             summary_date = NOW(),
-                            isSummaryFailed = 'N'
+                            isSummaryFailed = 'N',
+                            summary_retry_count = 0,
+                            summary_last_attempt = NULL
                         WHERE id = %s
                     """, (summary, fulltext, has_paywall, article_id))
                 else:
@@ -536,7 +654,9 @@ Return ONLY category names separated by commas (up to 3):"""
                         UPDATE articles
                         SET summary = %s,
                             summary_date = NOW(),
-                            isSummaryFailed = 'N'
+                            isSummaryFailed = 'N',
+                            summary_retry_count = 0,
+                            summary_last_attempt = NULL
                         WHERE id = %s
                     """, (summary, article_id))
 
@@ -556,18 +676,22 @@ Return ONLY category names separated by commas (up to 3):"""
         except Error as e:
             return False
 
-    def mark_article_failed(self, article_id):
-        """Mark article as failed to summarize"""
+    def mark_article_failed(self, article_id, retry_count=0):
+        """Mark article as failed and track retry attempts with exponential backoff"""
         try:
             with self.db_lock:
                 conn = mysql.connector.connect(**self.db_config)
                 cursor = conn.cursor()
+                cursor.execute("SET time_zone = '-08:00'")
 
+                # Increment retry count and update last attempt time
                 cursor.execute("""
                     UPDATE articles
-                    SET isSummaryFailed = 'Y'
+                    SET isSummaryFailed = 'Y',
+                        summary_retry_count = %s + 1,
+                        summary_last_attempt = NOW()
                     WHERE id = %s
-                """, (article_id,))
+                """, (retry_count, article_id))
 
                 conn.commit()
                 cursor.close()
@@ -580,40 +704,58 @@ Return ONLY category names separated by commas (up to 3):"""
     def process_article(self, article):
         """Process a single article"""
         try:
-            print(f"Processing: {article['title'][:60]}...")
+            retry_count = article.get('summary_retry_count', 0)
+            retry_note = f" (retry {retry_count})" if retry_count > 0 else ""
+            print(f"Processing: {article['title'][:60]}...{retry_note}")
 
-            # Get content
-            content = self.get_article_content(article['url'])
-            if not content:
+            # Start with existing fullArticle if available
+            has_existing = article.get('fullArticle') and len(article['fullArticle']) > 200
+            content = article['fullArticle'] if has_existing else None
+
+            # Always try to fetch from URL (to get fresh content)
+            url_content = self.get_article_content(article['url'])
+
+            if url_content and len(url_content) > 200:
+                # Use fresh content from URL
+                print(f"  → Fetched from URL ({len(url_content)} chars)")
+                content = url_content
+            elif has_existing:
+                # Fallback to existing fullArticle
+                print(f"  → Using existing fullArticle ({len(content)} chars)")
+            else:
+                # No content available
                 print(f"  ⊘ No content")
-                self.mark_article_failed(article['id'])
+                self.mark_article_failed(article['id'], retry_count)
                 return False
 
             # Summarize
             summary = self.summarize_with_ai(article['title'], content)
             if not summary:
                 print(f"  ⊘ No summary")
-                self.mark_article_failed(article['id'])
+                # Don't mark as failed if we have fullArticle - might be AI issue
+                if not has_existing:
+                    self.mark_article_failed(article['id'], retry_count)
                 return False
 
             # Categorize
             categories = self.categorize_with_ai(article['title'], summary)
 
-            # Save fullText (limit to 50KB)
+            # Save fullArticle (limit to 50KB)
             fulltext = content[:50000] if content and len(content) > 200 else None
 
-            # Update database
+            # Update database - also reset retry counter on success
             if self.update_article(article['id'], summary, categories, fulltext):
                 fulltext_note = f" + {len(fulltext)} chars" if fulltext else ""
                 print(f"  ✓ Done - {', '.join(categories)}{fulltext_note}")
                 return True
 
-            self.mark_article_failed(article['id'])
+            self.mark_article_failed(article['id'], retry_count)
             return False
 
         except Exception as e:
             print(f"  ✗ Error: {e}")
-            self.mark_article_failed(article['id'])
+            retry_count = article.get('summary_retry_count', 0)
+            self.mark_article_failed(article['id'], retry_count)
             return False
 
     def run(self, batch_size=20, max_workers=5):

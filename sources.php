@@ -17,12 +17,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt = $conn->prepare("INSERT INTO sources (name, url, enabled) VALUES (?, ?, ?)");
         $stmt->bind_param("ssi", $name, $url, $enabled);
 
-        if ($stmt->execute()) {
-            $message = "✓ Source added successfully!";
-            $message_type = "success";
-        } else {
-            $message = "✗ Error: " . $conn->error;
-            $message_type = "error";
+        try {
+            if ($stmt->execute()) {
+                $message = "✓ Source added successfully!";
+                $message_type = "success";
+            } else {
+                $message = "✗ Error: " . $conn->error;
+                $message_type = "error";
+            }
+        } catch (mysqli_sql_exception $e) {
+            if (strpos($e->getMessage(), 'Duplicate entry') !== false) {
+                $message = "✗ Error: This source already exists (duplicate URL or name)";
+                $message_type = "error";
+            } else {
+                $message = "✗ Error: " . $e->getMessage();
+                $message_type = "error";
+            }
         }
         $stmt->close();
     }
@@ -36,12 +46,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt = $conn->prepare("UPDATE sources SET name = ?, url = ?, enabled = ? WHERE id = ?");
         $stmt->bind_param("ssii", $name, $url, $enabled, $id);
 
-        if ($stmt->execute()) {
-            $message = "✓ Source updated successfully!";
-            $message_type = "success";
-        } else {
-            $message = "✗ Error: " . $conn->error;
-            $message_type = "error";
+        try {
+            if ($stmt->execute()) {
+                $message = "✓ Source updated successfully!";
+                $message_type = "success";
+            } else {
+                $message = "✗ Error: " . $conn->error;
+                $message_type = "error";
+            }
+        } catch (mysqli_sql_exception $e) {
+            if (strpos($e->getMessage(), 'Duplicate entry') !== false) {
+                $message = "✗ Error: This URL or name is already used by another source";
+                $message_type = "error";
+            } else {
+                $message = "✗ Error: " . $e->getMessage();
+                $message_type = "error";
+            }
         }
         $stmt->close();
     }

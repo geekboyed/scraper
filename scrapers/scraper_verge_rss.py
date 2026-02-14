@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""
+The Verge RSS Scraper
+Scrapes articles from The Verge RSS feed
+"""
+
+import os
+import requests
+from xml.etree import ElementTree as ET
+from datetime import datetime
+import mysql.connector
+from mysql.connector import Error
+from dotenv import load_dotenv
+import html
+import re
+
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
+
+class VergeRSSScraper:
+    def __init__(self):
+        self.rss_url = "https://www.theverge.com/rss/index.xml"
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.theverge.com/'
+        }
+
+        self.db_config = {
+            'host': os.getenv('DB_HOST'),
+            'database': os.getenv('DB_NAME'),
+            'user': os.getenv('DB_USER'),
+            'password': os.getenv('DB_PASS')
+        }
+
+        self.connection = None
+        self.source_id = 12  # The Verge source ID
+
+    def connect_db(self):
+        """Establish database connection"""
+        try:
+            self.connection = mysql.connector.connect(**self.db_config)
+            if self.connection.is_connected():
+                cursor = self.connection.cursor()
+                cursor.execute("SET time_zone = '-08:00'")
+                cursor.close()
+                print("✓ Connected to MySQL database")
+                return True
+        except Error as e:
+            print(f"✗ Error connecting to MySQL: {e}")
+            return False
+
+    def fetch_rss(self):
+        """Fetch and parse The Verge Atom feed"""
+        try:
+            response = requests.get(self.rss_url, headers=self.headers, timeout=15)
+            response.raise_for_status()
+
+            root = ET.fromstring(response.content)
+
+            # Atom namespace
+            ns = {'atom': 'http://www.w3.org/2005/Atom'}
+
+            articles = []
+            entries = root.findall('.//atom:entry', ns)
+
+            for entry in entries[:20]:  # Limit to 20 articles
+                title_elem = entry.find('atom:title', ns)
+                link_elem = entry.find("atom:link[@rel='alternate']", ns)
+
+                if title_elem is not None and link_elem is not None:
+                    title = html.unescape(title_elem.text or '')
+                    url = link_elem.get('href', '')
+
+                    # Clean title (remove CDATA and HTML tags)
+                    title = re.sub(r'<!\[CDATA\[(.*?)\]\]>', r'\1', title)
+                    title = re.sub(r'<[^>]+>', '', title)
+                    title = title.strip()
+
+                    if title and url:
+                        articles.append({
+                            'title': title[:500],
+                            'url': url[:500],
+                            'date': datetime.now().date()
+                        })
+
+            return articles
+
+        except Exception as e:
+            print(f"  ⚠ Error fetching RSS: {e}")
+            return []
+
+    def save_article(self, article):
+        """Save article to database"""
+        try:
+            cursor = self.connection.cursor()
+
+            # Check if exists
+            cursor.execute("""
+                SELECT id FROM articles
+                WHERE url = %s OR (source_id = %s AND title = %s)
+            """, (article['url'], self.source_id, article['title']))
+
+            if cursor.fetchone():
+                cursor.close()
+                return 'skipped'
+
+            # Insert new article
+            cursor.execute("""
+                INSERT INTO articles (source_id, title, url, published_date)
+                VALUES (%s, %s, %s, %s)
+            """, (self.source_id, article['title'], article['url'], article['date']))
+
+            self.connection.commit()
+            cursor.close()
+            return True
+
+        except Error as e:
+            print(f"  ✗ Error saving article: {e}")
+            return False
+
+    def run(self):
+        """Main scraping workflow"""
+        print("=" * 60)
+        print("The Verge RSS Scraper")
+        print("=" * 60)
+
+        if not self.connect_db():
+            return
+
+        print(f"\n🔍 Fetching from RSS feed...")
+        articles = self.fetch_rss()
+
+        if not articles:
+            print("No articles found")
+            return
+
+        print(f"✓ Found {len(articles)} articles")
+
+        print(f"\n📝 Processing articles...")
+        new_count = 0
+        skipped_count = 0
+
+        for i, article in enumerate(articles, 1):
+            print(f"\n[{i}/{len(articles)}] {article['title'][:70]}...")
+
+            result = self.save_article(article)
+
+            if result == 'skipped':
+                print("  ℹ Already exists")
+                skipped_count += 1
+            elif result:
+                print("  ✓ Saved to database")
+                new_count += 1
+
+        print("\n" + "=" * 60)
+        print(f"✓ Added {new_count} new articles")
+        print(f"  Skipped {skipped_count} existing articles")
+        print("=" * 60)
+
+        # Update source statistics
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute("""
+                UPDATE sources
+                SET articles_count = (SELECT COUNT(*) FROM articles WHERE source_id = %s),
+                    last_scraped = NOW()
+                WHERE id = %s
+            """, (self.source_id, self.source_id))
+            self.connection.commit()
+            cursor.close()
+        except Error as e:
+            print(f"⚠ Warning: Could not update source statistics: {e}")
+
+        if self.connection and self.connection.is_connected():
+            self.connection.close()
+
+if __name__ == "__main__":
+    scraper = VergeRSSScraper()
+    scraper.run()
