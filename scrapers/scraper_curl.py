@@ -5,20 +5,19 @@ Some sites respond better to curl's TLS fingerprint than Python requests
 """
 
 import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import env_loader  # Auto-loads .env and ~/.env_AI
 import subprocess
 from bs4 import BeautifulSoup
 from datetime import datetime
 import mysql.connector
 from mysql.connector import Error
-from dotenv import load_dotenv
 import re
 import json
 import requests
 from xml.etree import ElementTree as ET
 import html as html_module
-
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
-load_dotenv(os.path.expanduser('~/.env_AI'))  # Load AI keys from home directory
 
 class CurlScraper:
     def __init__(self, source_id=None, source_url=None):

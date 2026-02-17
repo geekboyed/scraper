@@ -12,13 +12,11 @@ from datetime import datetime, timedelta
 import mysql.connector
 from mysql.connector import Error
 import google.generativeai as genai
-from dotenv import load_dotenv
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import env_loader  # Auto-loads .env and ~/.env_AI
 import time
 import re
-
-# Load environment variables
-load_dotenv()
-load_dotenv(os.path.expanduser('~/.env_AI'))  # Load AI keys from home directory
 
 class BusinessInsiderScraper:
     def __init__(self):

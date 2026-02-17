@@ -5,17 +5,16 @@ Uses multiple RSS feeds to get comprehensive coverage
 """
 
 import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import env_loader  # Auto-loads .env and ~/.env_AI
 import requests
 from xml.etree import ElementTree as ET
 from datetime import datetime
 import mysql.connector
 from mysql.connector import Error
-from dotenv import load_dotenv
 import html
 import time
-
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
-load_dotenv(os.path.expanduser('~/.env_AI'))  # Load AI keys from home directory
 
 class MarketWatchMultiRSSScraper:
     def __init__(self):

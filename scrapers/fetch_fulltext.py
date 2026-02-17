@@ -5,19 +5,15 @@ Fetch and save fullArticle for recent articles
 
 import os
 import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import env_loader  # Auto-loads .env and ~/.env_AI
+sys.path.insert(0, os.path.dirname(__file__))
+from simhash_util import SimHash
 import mysql.connector
 from mysql.connector import Error
-from dotenv import load_dotenv
 import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
-
-# Import SimHash for duplicate detection
-sys.path.insert(0, os.path.dirname(__file__))
-from simhash_util import SimHash
-
-# Load environment variables
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
 class FullTextFetcher:
     def __init__(self):

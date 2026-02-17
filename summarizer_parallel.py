@@ -13,16 +13,12 @@ import mysql.connector
 from mysql.connector import Error
 from google import genai
 from google.genai import types
-from dotenv import load_dotenv
+import env_loader  # Auto-loads .env and ~/.env_AI
 import time
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
-
-# Load environment variables
-load_dotenv()  # Load local .env
-load_dotenv(os.path.expanduser('~/.env_AI'))  # Load AI keys from home directory
 
 class ParallelSummarizer:
     def __init__(self):

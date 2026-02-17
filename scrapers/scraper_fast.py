@@ -5,17 +5,15 @@ Quickly scrapes articles without AI processing
 """
 
 import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import env_loader  # Auto-loads .env and ~/.env_AI
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
 import mysql.connector
 from mysql.connector import Error
-from dotenv import load_dotenv
 import re
-
-# Load environment variables
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
-load_dotenv(os.path.expanduser('~/.env_AI'))  # Load AI keys from home directory
 
 class FastScraper:
     def __init__(self, source_id=None, source_url=None):
