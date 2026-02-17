@@ -1,5 +1,7 @@
 # Environment and secrets
 .env
+.env_backup
+*.env_backup
 
 # Logs
 logs/
@@ -30,4 +32,3 @@ Thumbs.db
 # Temporary files
 /tmp/
 *.tmp
-scripts/.env_backup
