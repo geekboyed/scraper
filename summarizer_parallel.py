@@ -740,6 +740,10 @@ Return ONLY category names separated by commas (up to 3):"""
             # Categorize
             categories = self.categorize_with_ai(article['title'], summary)
 
+            # Force-include Sports category for sports sources (ESPN=17, NY Athletic=18, AP Sports=19)
+            if article.get('source_id') in [17, 18, 19] and 'Sports' not in categories:
+                categories.insert(0, 'Sports')  # Add Sports as first category
+
             # Save fullArticle (limit to 50KB)
             fulltext = content[:50000] if content and len(content) > 200 else None
 

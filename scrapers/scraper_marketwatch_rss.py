@@ -121,13 +121,21 @@ class MarketWatchMultiRSSScraper:
         try:
             cursor = self.connection.cursor()
 
-            # Check for duplicates by title + source_id
+            # Check for duplicates by URL or title within 24 hours
             cursor.execute("""
                 SELECT id FROM articles
-                WHERE title = %s AND source_id = %s
-            """, (article_data['title'], self.source_id))
+                WHERE url = %s
+                OR (title = %s AND source_id = %s AND ABS(DATEDIFF(published_date, %s)) <= 1)
+            """, (
+                article_data.get('url', ''),
+                article_data['title'],
+                self.source_id,
+                article_data.get('published_date', datetime.now().date())
+            ))
 
-            if cursor.fetchone():
+            # Consume the result to avoid "Unread result found" error
+            existing = cursor.fetchone()
+            if existing:
                 cursor.close()
                 return 'skipped'
 

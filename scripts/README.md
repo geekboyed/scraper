@@ -1,123 +1,28 @@
-# Business Insider Web Scraper
+# Scripts Directory
 
-A Python-based web scraper that automatically fetches articles from Business Insider, summarizes them using AI, categorizes them, and displays them in a beautiful PHP dashboard.
+This directory contains utility scripts, admin tools, and documentation that are not part of the main site.
 
-## Features
+## Admin Utilities
 
-- 🔍 **Web Scraping**: Automatically scrapes articles from Business Insider homepage
-- 🤖 **AI Summarization**: Uses OpenAI GPT-4o-mini to generate concise summaries
-- 📊 **Auto-Categorization**: Intelligently categorizes articles into business topics
-- 💾 **Database Storage**: Stores articles in MySQL with full metadata
-- 🌐 **Web Dashboard**: Beautiful PHP interface to browse and filter articles
+- **scrape_now.php** - Manual scrape trigger (standalone, not linked from main site)
+- **reset_retry_counts.py** - Utility to reset article summary retry counts
+- **run_reset_retries.sh** - Wrapper script for reset_retry_counts.py
 
-## Setup
+## Documentation
 
-### 1. Install Python Dependencies
+- **SIMHASH_FINAL_SOLUTION.md** - Documentation about SimHash duplicate detection implementation
+- **CLEANUP_GUIDE.md** - Guide for cleanup procedures
+- **IMPROVEMENTS.md** - Ideas and improvements documentation
+- **MARKETWATCH_DIAGNOSIS.md** - MarketWatch scraper diagnostics
+- **README.md** - This file
+- **SETUP.md** - Setup instructions
+- **SOURCE_TESTING_GUIDE.md** - Guide for testing scraper sources
 
-```bash
-pip3 install -r requirements.txt
-```
+## Test/Debug Files
 
-### 2. Configure Environment
+- **marketwatch_raw.html** - Sample HTML for testing MarketWatch scraper
+- **.env_backup** - Backup of environment configuration
 
-Make sure your `.env` file has the correct settings:
-- Database credentials (DB_HOST, DB_NAME, DB_USER, DB_PASS)
-- OpenAI API key (OPENAI_API_KEY)
+## Old Scripts
 
-### 3. Run the Scraper
-
-```bash
-python3 scraper.py
-```
-
-Or use the convenience script:
-```bash
-./run.sh
-```
-
-## Database Schema
-
-### Tables
-
-**articles**
-- `id`: Primary key
-- `title`: Article title
-- `url`: Article URL (unique)
-- `published_date`: Publication date
-- `summary`: AI-generated summary
-- `scraped_at`: Timestamp of scraping
-
-**categories**
-- `id`: Primary key
-- `name`: Category name (unique)
-- `description`: Category description
-
-**article_categories**
-- `article_id`: Foreign key to articles
-- `category_id`: Foreign key to categories
-- `confidence`: Categorization confidence score
-
-## Business Categories
-
-- Finance
-- Technology
-- Retail
-- Real Estate
-- Healthcare
-- Energy
-- Automotive
-- Media & Entertainment
-- Economy
-- Markets
-- Leadership
-- Startups
-- Global Business
-
-## Web Dashboard
-
-Access the dashboard at: `http://your-server/BIScrape/`
-
-Features:
-- View all scraped articles
-- Filter by category
-- Search articles by title/summary
-- Click through to original articles
-- Responsive design
-
-## How It Works
-
-1. **Scraping**: Fetches Business Insider homepage and extracts article links
-2. **Content Extraction**: Downloads full article content
-3. **Summarization**: Uses OpenAI API to create concise summaries
-4. **Categorization**: AI categorizes each article into relevant business topics
-5. **Storage**: Saves to MySQL database with relationships
-6. **Display**: PHP dashboard queries and presents the data
-
-## API Usage
-
-The scraper uses OpenAI's GPT-4o-mini model for:
-- Article summarization (2-3 sentences)
-- Topic categorization (up to 3 categories per article)
-
-## Rate Limiting
-
-- 1-second delay between articles to be respectful to Business Insider
-- Limits to 20 articles per run to manage API costs
-
-## Scheduling
-
-To run automatically, add to crontab:
-```bash
-# Run every hour
-0 * * * * cd /var/www/html/BIScrape && python3 scraper.py >> scraper.log 2>&1
-
-# Run twice daily (8 AM and 8 PM)
-0 8,20 * * * cd /var/www/html/BIScrape && python3 scraper.py >> scraper.log 2>&1
-```
-
-## Notes
-
-- The scraper respects the target website's structure
-- Uses appropriate user agents and rate limiting
-- Deduplicates articles based on URL
-- Handles errors gracefully with fallbacks
+- **scraper_marketwatch_rss.py.old** - Old version of MarketWatch RSS scraper

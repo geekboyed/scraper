@@ -258,10 +258,11 @@ class FastScraper:
         try:
             cursor = self.connection.cursor()
 
-            # Check if article already exists
+            # Check if article already exists (by URL or same title within 24 hours)
             cursor.execute("""
                 SELECT id FROM articles
-                WHERE url = %s OR (title = %s AND published_date = %s)
+                WHERE url = %s
+                OR (title = %s AND ABS(DATEDIFF(published_date, %s)) <= 1)
             """, (
                 article_data['url'],
                 article_data['title'],

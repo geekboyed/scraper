@@ -95,13 +95,21 @@ class VergeRSSScraper:
         try:
             cursor = self.connection.cursor()
 
-            # Check if exists
+            # Check if exists (by URL or same title within 24 hours)
             cursor.execute("""
                 SELECT id FROM articles
-                WHERE url = %s OR (source_id = %s AND title = %s)
-            """, (article['url'], self.source_id, article['title']))
+                WHERE url = %s
+                OR (source_id = %s AND title = %s AND ABS(DATEDIFF(published_date, %s)) <= 1)
+            """, (
+                article['url'],
+                self.source_id,
+                article['title'],
+                article.get('published_date', datetime.now().date())
+            ))
 
-            if cursor.fetchone():
+            # Consume the result to avoid "Unread result found" error
+            existing = cursor.fetchone()
+            if existing:
                 cursor.close()
                 return 'skipped'
 

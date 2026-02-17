@@ -235,14 +235,16 @@ Return ONLY the category names separated by commas (up to 3 categories, most rel
         try:
             cursor = self.connection.cursor()
 
-            # Check if article already exists (by URL or source+title)
+            # Check if article already exists (by URL or same title within 24 hours)
             cursor.execute("""
                 SELECT id FROM articles
-                WHERE url = %s OR (source_id = %s AND title = %s)
+                WHERE url = %s
+                OR (source_id = %s AND title = %s AND ABS(DATEDIFF(published_date, %s)) <= 1)
             """, (
                 article_data['url'],
                 self.source_id,
-                article_data['title']
+                article_data['title'],
+                article_data.get('published_date', datetime.now().date())
             ))
 
             existing = cursor.fetchone()

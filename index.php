@@ -36,6 +36,8 @@ $types = '';
 $tech_filter = isset($_GET['tech']) && $_GET['tech'] == '1';
 // Business filter - show only business categories
 $business_filter = isset($_GET['business']) && $_GET['business'] == '1';
+// Sports filter - show only sports categories
+$sports_filter = isset($_GET['sports']) && $_GET['sports'] == '1';
 
 if ($tech_filter) {
     // Technology categories: 2=Technology, 7=Automotive, 8=Media, 16=Crypto, 17=AI&ML, 18=Cybersecurity, 19=Cloud, 20=Hardware, 21=Software, 22=Robotics
@@ -43,6 +45,9 @@ if ($tech_filter) {
 } elseif ($business_filter) {
     // Business categories: 1=Finance, 3=Retail, 9=Economy, 10=Markets, 11=Leadership, 12=Startups, 13=Global Business, 14=Legal, 15=Labor
     $where[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a.id AND category_id IN (1, 3, 9, 10, 11, 12, 13, 14, 15))";
+} elseif ($sports_filter) {
+    // Sports categories: 23=Sports
+    $where[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a.id AND category_id IN (23))";
 } elseif (!empty($category_filter)) {
     // Handle multiple category selection
     $placeholders = implode(',', array_fill(0, count($category_filter), '?'));
@@ -1085,7 +1090,7 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
         function minimizeAll() {
             // Find all summary divs that are visible
             const allSummaries = document.querySelectorAll('.article-summary');
-            const allButtons = document.querySelectorAll('.btn-toggle-summary');
+            const allButtons = document.querySelectorAll('.btn-read-summary');
 
             allSummaries.forEach(summary => {
                 if (summary.classList.contains('summary-visible')) {
@@ -1095,11 +1100,34 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
             });
 
             allButtons.forEach(btn => {
-                if (btn.classList.contains('active')) {
+                if (btn.textContent.includes('📕 Hide Summary')) {
                     btn.textContent = '📖 Read Summary';
                     btn.classList.remove('active');
                 }
             });
+        }
+
+        function expandAll() {
+            // Find all summary divs and expand them
+            const allSummaries = document.querySelectorAll('.article-summary');
+            const allButtons = document.querySelectorAll('.btn-read-summary');
+
+            allSummaries.forEach(summary => {
+                if (summary.classList.contains('summary-hidden')) {
+                    summary.classList.remove('summary-hidden');
+                    summary.classList.add('summary-visible');
+                }
+            });
+
+            allButtons.forEach(btn => {
+                if (btn.textContent.includes('📖 Read Summary')) {
+                    btn.textContent = '📕 Hide Summary';
+                    btn.classList.add('active');
+                }
+            });
+
+            // Scroll to top of articles
+            document.querySelector('.articles-grid').scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
 
         function scrollToTop() {
@@ -1367,6 +1395,17 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
             }
         }
 
+        // Auto-expand summaries when coming from filter buttons
+        window.addEventListener('DOMContentLoaded', function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get('expand') === '1') {
+                // Small delay to ensure page is fully loaded
+                setTimeout(function() {
+                    expandAll();
+                }, 300);
+            }
+        });
+
         // Filter Modal Functions
         function openFiltersModal() {
             document.getElementById('filtersModal').style.display = 'block';
@@ -1507,7 +1546,7 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
             <div style="margin-bottom: 5px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
                 <a href="?date=1day"
                    class="btn"
-                   style="<?php echo (!isset($_GET['tech']) && !isset($_GET['business']) && empty($category_filter)) ? 'background: #667eea; color: white;' : 'background: #f8f9fa; color: #333; border: 2px solid #667eea;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 5px; font-weight: 600; display: inline-block;">
+                   style="<?php echo (!isset($_GET['tech']) && !isset($_GET['business']) && !isset($_GET['sports']) && empty($category_filter)) ? 'background: #667eea; color: white;' : 'background: #f8f9fa; color: #333; border: 2px solid #667eea;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 5px; font-weight: 600; display: inline-block;">
                     📰 All Articles
                 </a>
                 <a href="?tech=1&date=1day"
@@ -1519,6 +1558,11 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
                    class="btn"
                    style="<?php echo isset($_GET['business']) ? 'background: #667eea; color: white;' : 'background: #f8f9fa; color: #333; border: 2px solid #667eea;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 5px; font-weight: 600; display: inline-block;">
                     💼 Business
+                </a>
+                <a href="?sports=1&date=1day"
+                   class="btn"
+                   style="<?php echo isset($_GET['sports']) ? 'background: #667eea; color: white;' : 'background: #f8f9fa; color: #333; border: 2px solid #667eea;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 5px; font-weight: 600; display: inline-block;">
+                    ⚽ Sports
                 </a>
 
                 <!-- Filter & Search (aligned right) -->
@@ -1828,8 +1872,11 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
                     <?php endif; ?>
                 </form>
 
-                <!-- Minimize All Button -->
-                <button onclick="minimizeAll()" class="btn" style="background: #6c757d; color: white; padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; margin-left: 15px;">
+                <!-- Expand/Minimize All Buttons -->
+                <button onclick="expandAll()" class="btn" style="background: #28a745; color: white; padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; margin-left: 15px;">
+                    ▼ Expand All
+                </button>
+                <button onclick="minimizeAll()" class="btn" style="background: #6c757d; color: white; padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px;">
                     ▲ Minimize All
                 </button>
             </div>
@@ -2002,8 +2049,11 @@ $unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
                     <?php endif; ?>
                 </form>
 
-                <!-- Minimize All Button -->
-                <button onclick="minimizeAll()" class="btn" style="background: #6c757d; color: white; padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; margin-left: 15px;">
+                <!-- Expand/Minimize All Buttons -->
+                <button onclick="expandAll()" class="btn" style="background: #28a745; color: white; padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; margin-left: 15px;">
+                    ▼ Expand All
+                </button>
+                <button onclick="minimizeAll()" class="btn" style="background: #6c757d; color: white; padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px;">
                     ▲ Minimize All
                 </button>
             </div>

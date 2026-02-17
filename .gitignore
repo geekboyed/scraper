@@ -30,3 +30,4 @@ Thumbs.db
 # Temporary files
 /tmp/
 *.tmp
+scripts/.env_backup

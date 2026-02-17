@@ -282,13 +282,21 @@ class CurlScraper:
         try:
             cursor = self.connection.cursor()
 
-            # Check for duplicates by title + source_id
+            # Check for duplicates by URL or title within 24 hours
             cursor.execute("""
                 SELECT id FROM articles
-                WHERE title = %s AND source_id = %s
-            """, (article_data['title'], self.source_id))
+                WHERE url = %s
+                OR (title = %s AND source_id = %s AND ABS(DATEDIFF(published_date, %s)) <= 1)
+            """, (
+                article_data.get('url', ''),
+                article_data['title'],
+                self.source_id,
+                article_data.get('date', datetime.now().date())
+            ))
 
-            if cursor.fetchone():
+            # Fully consume all results to avoid "Unread result found" error
+            existing = cursor.fetchall()  # Use fetchall() to fully consume result set
+            if existing:  # If list is not empty, duplicate exists
                 cursor.close()
                 return 'skipped'
 
@@ -301,6 +309,14 @@ class CurlScraper:
                 article_data['url'],
                 article_data['date']
             ))
+
+            # Auto-assign Sports category for sports sources (ESPN=17, NY Athletic=18, AP Sports=19)
+            if self.source_id in [17, 18, 19]:
+                article_id = cursor.lastrowid
+                cursor.execute("""
+                    INSERT IGNORE INTO article_categories (article_id, category_id)
+                    VALUES (%s, 23)
+                """, (article_id,))
 
             self.connection.commit()
             cursor.close()
