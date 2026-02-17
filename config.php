@@ -37,6 +37,12 @@ function loadEnv($path) {
 // Load .env file
 loadEnv(__DIR__ . '/.env');
 
+// Load AI configuration from user's home directory
+$ai_env = getenv('HOME') . '/.env_AI';
+if (file_exists($ai_env)) {
+    loadEnv($ai_env);
+}
+
 // Database credentials
 $db_host = getenv('DB_HOST') ?: 'localhost';
 $db_name = getenv('DB_NAME') ?: 'scrapeDB';

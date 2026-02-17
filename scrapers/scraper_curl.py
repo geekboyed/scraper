@@ -18,6 +18,7 @@ from xml.etree import ElementTree as ET
 import html as html_module
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
+load_dotenv(os.path.expanduser('~/.env_AI'))  # Load AI keys from home directory
 
 class CurlScraper:
     def __init__(self, source_id=None, source_url=None):

@@ -18,6 +18,7 @@ import re
 
 # Load environment variables
 load_dotenv()
+load_dotenv(os.path.expanduser('~/.env_AI'))  # Load AI keys from home directory
 
 class BusinessInsiderScraper:
     def __init__(self):

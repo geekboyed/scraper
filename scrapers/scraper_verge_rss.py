@@ -15,6 +15,7 @@ import html
 import re
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
+load_dotenv(os.path.expanduser('~/.env_AI'))  # Load AI keys from home directory
 
 class VergeRSSScraper:
     def __init__(self):

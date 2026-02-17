@@ -21,7 +21,8 @@ from threading import Lock
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 # Load environment variables
-load_dotenv()
+load_dotenv()  # Load local .env
+load_dotenv(os.path.expanduser('~/.env_AI'))  # Load AI keys from home directory
 
 class ParallelSummarizer:
     def __init__(self):
