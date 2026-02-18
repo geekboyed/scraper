@@ -11,8 +11,8 @@ import requests
 from bs4 import BeautifulSoup
 import mysql.connector
 from mysql.connector import Error
-from google import genai
-from google.genai import types
+# from google import genai  # Gemini disabled
+# from google.genai import types
 import env_loader  # Auto-loads .env and ~/.env_AI
 import time
 import json
@@ -53,16 +53,21 @@ class ParallelSummarizer:
         self.deepseek_key = os.getenv('DEEPSEEK_API_KEY')
         self.openai_key = os.getenv('OPENAI_API_KEY')
 
+        # Model configuration from environment
+        self.anthropic_model = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-6')
+        self.deepseek_model = os.getenv('DEEPSEEK_MODEL', 'deepseek-chat')
+        self.openai_model = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
+
         # Display configuration
         print(f"✓ AI Provider Order: {' → '.join(self.provider_order)}")
         if self.anthropic_key:
-            print("✓ Anthropic API configured (Claude 3.5 Haiku)")
+            print(f"✓ Anthropic API configured ({self.anthropic_model})")
         if self.minai_key:
             print("✓ 1min.ai API configured (GPT-4o-mini)")
         if self.deepseek_key:
-            print("✓ DeepSeek API configured")
+            print(f"✓ DeepSeek API configured ({self.deepseek_model})")
         if self.openai_key:
-            print("✓ OpenAI API configured (quota may be limited)")
+            print(f"✓ OpenAI API configured ({self.openai_model})")
 
         # Gemini direct configuration (disabled but kept for future use)
         self.gemini_client = None
@@ -106,7 +111,7 @@ class ParallelSummarizer:
         """Get articles that need summaries, including failed articles eligible for retry with exponential backoff"""
         cursor = self.connection.cursor(dictionary=True)
         cursor.execute("""
-            SELECT a.id, a.title, a.url, a.fullArticle, a.summary_retry_count
+            SELECT a.id, a.title, a.url, a.fullArticle, a.summary_retry_count, s.mainCategory
             FROM articles a
             LEFT JOIN sources s ON a.source_id = s.id
             WHERE (a.summary IS NULL OR a.summary = '')
@@ -376,7 +381,7 @@ class ParallelSummarizer:
                     'Content-Type': 'application/json'
                 },
                 json={
-                    'model': 'claude-3-5-haiku-20241022',
+                    'model': self.anthropic_model,
                     'max_tokens': max_tokens,
                     'messages': [
                         {'role': 'user', 'content': prompt}
@@ -397,7 +402,7 @@ class ParallelSummarizer:
             return None
 
     def call_deepseek(self, prompt, max_tokens=200):
-        """Call DeepSeek API (kept for reference)"""
+        """Call DeepSeek API"""
         try:
             response = requests.post(
                 'https://api.deepseek.com/v1/chat/completions',
@@ -406,7 +411,7 @@ class ParallelSummarizer:
                     'Content-Type': 'application/json'
                 },
                 json={
-                    'model': 'deepseek-chat',
+                    'model': self.deepseek_model,
                     'messages': [
                         {'role': 'system', 'content': 'You are a business news summarizer. Provide concise, factual summaries.'},
                         {'role': 'user', 'content': prompt}
@@ -435,7 +440,7 @@ class ParallelSummarizer:
                     'Content-Type': 'application/json'
                 },
                 json={
-                    'model': 'gpt-4o-mini',
+                    'model': self.openai_model,
                     'messages': [
                         {'role': 'system', 'content': 'You are a business news summarizer. Provide concise, factual summaries.'},
                         {'role': 'user', 'content': prompt}
@@ -546,16 +551,41 @@ Write a summary (200-300 words):"""
 
         return None
 
-    def categorize_with_ai(self, title, summary):
+    def categorize_with_ai(self, title, summary, main_category=None):
         """Categorize using AI providers in configured order"""
         if not summary:
             return ['Global Business']
 
-        categories_list = list(self.categories_cache.keys())
-        prompt = f"""Categorize this article into the most relevant categories from: {', '.join(categories_list)}
+        # For sports sources, ALWAYS return Sports only
+        if main_category == 'Sports':
+            return ['Sports']
 
-Title: {title}
-Summary: {summary}
+        # Build category descriptions for better AI understanding
+        categories_with_desc = []
+        for name, data in self.categories_cache.items():
+            desc = data.get('description', '')
+            if desc:
+                categories_with_desc.append(f"{name} ({desc})")
+            else:
+                categories_with_desc.append(name)
+
+        # For all other sources, use AI categorization
+        if True:
+            prompt = f"""Categorize this business news article into the most relevant categories.
+
+CATEGORY DEFINITIONS:
+{chr(10).join('- ' + cat for cat in sorted(categories_with_desc))}
+
+IMPORTANT RULES:
+- Sports = Athletic competitions, professional sports leagues, athletes, sporting events (NOT technology)
+- Technology = Only for general tech companies/innovation when NO specific tech category applies
+- Use specific tech categories (AI/ML, Cloud, Cybersecurity, Hardware, Software, Robotics) instead of generic Technology when applicable
+- MMA, UFC, boxing, football, basketball, etc. are ALWAYS Sports, never Technology
+- Choose up to 3 most relevant categories
+- Be precise - don't default to Technology for non-tech topics
+
+Article Title: {title}
+Article Summary: {summary}
 
 Return ONLY category names separated by commas (up to 3):"""
 
@@ -734,12 +764,8 @@ Return ONLY category names separated by commas (up to 3):"""
                     self.mark_article_failed(article['id'], retry_count)
                 return False
 
-            # Categorize
-            categories = self.categorize_with_ai(article['title'], summary)
-
-            # Force-include Sports category for sports sources (ESPN=17, NY Athletic=18, AP Sports=19)
-            if article.get('source_id') in [17, 18, 19] and 'Sports' not in categories:
-                categories.insert(0, 'Sports')  # Add Sports as first category
+            # Categorize with source awareness
+            categories = self.categorize_with_ai(article['title'], summary, article.get('mainCategory'))
 
             # Save fullArticle (limit to 50KB)
             fulltext = content[:50000] if content and len(content) > 200 else None

@@ -13,9 +13,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $name = trim($_POST['name']);
         $url = trim($_POST['url']);
         $enabled = isset($_POST['enabled']) ? 1 : 0;
+        $mainCategory = trim($_POST['mainCategory'] ?? 'Business');
 
-        $stmt = $conn->prepare("INSERT INTO sources (name, url, enabled) VALUES (?, ?, ?)");
-        $stmt->bind_param("ssi", $name, $url, $enabled);
+        $stmt = $conn->prepare("INSERT INTO sources (name, url, enabled, mainCategory) VALUES (?, ?, ?, ?)");
+        $stmt->bind_param("ssis", $name, $url, $enabled, $mainCategory);
 
         try {
             if ($stmt->execute()) {
@@ -42,9 +43,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $name = trim($_POST['name']);
         $url = trim($_POST['url']);
         $enabled = isset($_POST['enabled']) ? 1 : 0;
+        $mainCategory = trim($_POST['mainCategory'] ?? 'Business');
 
-        $stmt = $conn->prepare("UPDATE sources SET name = ?, url = ?, enabled = ? WHERE id = ?");
-        $stmt->bind_param("ssii", $name, $url, $enabled, $id);
+        $stmt = $conn->prepare("UPDATE sources SET name = ?, url = ?, enabled = ?, mainCategory = ? WHERE id = ?");
+        $stmt->bind_param("ssisi", $name, $url, $enabled, $mainCategory, $id);
 
         try {
             if ($stmt->execute()) {
@@ -293,6 +295,60 @@ $sources_result = $conn->query("SELECT * FROM sources ORDER BY created_at DESC")
             gap: 10px;
             justify-content: flex-end;
         }
+
+        .radio-button-group {
+            display: flex;
+            gap: 10px;
+        }
+
+        .radio-button-group input[type="radio"] {
+            display: none;
+        }
+
+        .radio-button-group label {
+            padding: 10px 20px;
+            background: #e0e0e0;
+            color: #333;
+            border: 2px solid #ccc;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s;
+            display: inline-block;
+            text-align: center;
+        }
+
+        .radio-button-group label:hover {
+            background: #d0d0d0;
+        }
+
+        .radio-button-group input[type="radio"]:checked + label {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+
+        .category-badge {
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+
+        .category-business {
+            background: #cfe2ff;
+            color: #084298;
+        }
+
+        .category-technology {
+            background: #d1e7dd;
+            color: #0f5132;
+        }
+
+        .category-sports {
+            background: #fff3cd;
+            color: #997404;
+        }
     </style>
 </head>
 <body>
@@ -318,6 +374,7 @@ $sources_result = $conn->query("SELECT * FROM sources ORDER BY created_at DESC")
                     <tr>
                         <th>Name</th>
                         <th>URL</th>
+                        <th>Category</th>
                         <th>Status</th>
                         <th>Last Scraped</th>
                         <th>Articles</th>
@@ -325,13 +382,20 @@ $sources_result = $conn->query("SELECT * FROM sources ORDER BY created_at DESC")
                     </tr>
                 </thead>
                 <tbody>
-                    <?php while ($source = $sources_result->fetch_assoc()): ?>
+                    <?php while ($source = $sources_result->fetch_assoc()):
+                        $categoryClass = 'category-' . strtolower($source['mainCategory'] ?? 'business');
+                    ?>
                         <tr>
                             <td><strong><?php echo htmlspecialchars($source['name']); ?></strong></td>
                             <td style="font-size: 0.9em;">
                                 <a href="<?php echo htmlspecialchars($source['url']); ?>" target="_blank">
                                     <?php echo htmlspecialchars($source['url']); ?>
                                 </a>
+                            </td>
+                            <td>
+                                <span class="category-badge <?php echo $categoryClass; ?>">
+                                    <?php echo htmlspecialchars($source['mainCategory'] ?? 'Business'); ?>
+                                </span>
                             </td>
                             <td>
                                 <button class="btn <?php echo $source['enabled'] ? 'btn-success' : 'btn-secondary'; ?>"
@@ -379,6 +443,20 @@ $sources_result = $conn->query("SELECT * FROM sources ORDER BY created_at DESC")
                 </div>
 
                 <div class="form-group">
+                    <label>Main Category</label>
+                    <div class="radio-button-group">
+                        <input type="radio" name="mainCategory" id="catBusiness" value="Business" checked>
+                        <label for="catBusiness">Business</label>
+
+                        <input type="radio" name="mainCategory" id="catTechnology" value="Technology">
+                        <label for="catTechnology">Technology</label>
+
+                        <input type="radio" name="mainCategory" id="catSports" value="Sports">
+                        <label for="catSports">Sports</label>
+                    </div>
+                </div>
+
+                <div class="form-group">
                     <label>
                         <input type="checkbox" name="enabled" id="sourceEnabled" checked>
                         Enabled
@@ -414,6 +492,17 @@ $sources_result = $conn->query("SELECT * FROM sources ORDER BY created_at DESC")
             document.getElementById('sourceName').value = source.name;
             document.getElementById('sourceUrl').value = source.url;
             document.getElementById('sourceEnabled').checked = source.enabled == 1;
+
+            // Set the correct main category radio button
+            const mainCategory = source.mainCategory || 'Business';
+            if (mainCategory === 'Business') {
+                document.getElementById('catBusiness').checked = true;
+            } else if (mainCategory === 'Technology') {
+                document.getElementById('catTechnology').checked = true;
+            } else if (mainCategory === 'Sports') {
+                document.getElementById('catSports').checked = true;
+            }
+
             openModal('edit');
         }
 

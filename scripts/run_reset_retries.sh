@@ -5,8 +5,14 @@
 # Change to project directory
 cd /var/www/html/scraper
 
+# Load LOG_DIR from .env or use default
+if [ -f .env ]; then
+    export $(grep -v '^#' .env | grep LOG_DIR | xargs)
+fi
+LOG_DIR="${LOG_DIR:-/var/log/scraper}"
+
 # Run the reset script and log output
-python3 reset_retry_counts.py >> logs/reset_retries.log 2>&1
+python3 reset_retry_counts.py >> "$LOG_DIR/reset_retries.log" 2>&1
 
 # Exit with the Python script's exit code
 exit $?

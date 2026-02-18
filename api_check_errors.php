@@ -49,6 +49,9 @@ foreach ($log_files as $log_file) {
         continue;
     }
 
+    // Get file modification time as fallback timestamp
+    $file_modified_time = date('Y-m-d H:i:s', filemtime($filepath));
+
     // Get last 500 lines of log
     $lines = [];
     $file_handle = fopen($filepath, 'r');
@@ -111,10 +114,25 @@ foreach ($log_files as $log_file) {
 
             foreach ($error_patterns as $pattern => $label) {
                 if (stripos($line, $pattern) !== false) {
-                    // Extract context (timestamp if available)
-                    $timestamp = 'Unknown';
+                    // Extract timestamp from log line (try multiple formats)
+                    $timestamp = null;
+
+                    // Try ISO format: 2024-01-15T10:30:45 or 2024-01-15 10:30:45
                     if (preg_match('/(\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2})/', $line, $matches)) {
                         $timestamp = $matches[1];
+                    }
+                    // Try log format: [2024-01-15 10:30:45]
+                    elseif (preg_match('/\[(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})\]/', $line, $matches)) {
+                        $timestamp = $matches[1];
+                    }
+                    // Try common log format: Jan 15 10:30:45
+                    elseif (preg_match('/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}/', $line, $matches)) {
+                        $timestamp = date('Y') . '-' . date('m-d H:i:s', strtotime($matches[0]));
+                    }
+
+                    // Fallback to file modification time if no timestamp found in line
+                    if (!$timestamp) {
+                        $timestamp = $file_modified_time;
                     }
 
                     // Extract source name from URL
@@ -194,6 +212,7 @@ if (isset($conn)) {
         FROM articles a
         LEFT JOIN sources s ON a.source_id = s.id
         WHERE a.isSummaryFailed = 'Y'
+        AND a.scraped_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
         ORDER BY a.scraped_at DESC
         LIMIT 50
     ");

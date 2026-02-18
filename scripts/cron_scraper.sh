@@ -4,11 +4,14 @@
 
 cd /var/www/html/BIScrape
 
-# Log file with date
-LOG_FILE="/var/www/html/BIScrape/logs/scraper_$(date +\%Y\%m\%d).log"
+# Load LOG_DIR from .env or use default
+if [ -f /var/www/html/scraper/.env ]; then
+    export $(grep -v '^#' /var/www/html/scraper/.env | grep LOG_DIR | xargs)
+fi
+LOG_DIR="${LOG_DIR:-/var/log/scraper}"
 
-# Create logs directory if it doesn't exist
-mkdir -p logs
+# Log file with date
+LOG_FILE="$LOG_DIR/scraper_$(date +\%Y\%m\%d).log"
 
 # Run scraper and log output
 echo "=== Scraper run started at $(date) ===" >> "$LOG_FILE"
