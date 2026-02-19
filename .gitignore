@@ -1,5 +1,6 @@
 # Environment and secrets
 .env
+.env_AI
 .env_backup
 *.env_backup
 
