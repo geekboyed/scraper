@@ -1,9 +1,33 @@
 <?php
 /**
  * Sources Management - CRUD for scraping sources
+ * Filtered by user: regular users see base + their linked sources, admins see all.
  */
 
 require_once 'config.php';
+require_once 'auth_check.php';
+
+// Redirect to login if not authenticated
+if (!$current_user) {
+    header('Location: login.php');
+    exit;
+}
+
+$is_admin = ($current_user['isAdmin'] == 'Y');
+$user_id = (int)$current_user['id'];
+
+/**
+ * Check if a non-admin user owns a given source (linked via users_sources).
+ */
+function userOwnsSource($conn, $user_id, $source_id) {
+    $stmt = $conn->prepare("SELECT 1 FROM users_sources WHERE user_id = ? AND source_id = ?");
+    $stmt->bind_param("ii", $user_id, $source_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $owns = ($result->num_rows > 0);
+    $stmt->close();
+    return $owns;
+}
 
 // Handle POST requests (Create, Update, Delete)
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -12,19 +36,65 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'create') {
         $name = trim($_POST['name']);
         $url = trim($_POST['url']);
-        $enabled = isset($_POST['enabled']) ? 1 : 0;
+        $isActive = isset($_POST['isActive']) ? 'Y' : 'N';
         $mainCategory = trim($_POST['mainCategory'] ?? 'Business');
 
-        $stmt = $conn->prepare("INSERT INTO sources (name, url, enabled, mainCategory) VALUES (?, ?, ?, ?)");
-        $stmt->bind_param("ssis", $name, $url, $enabled, $mainCategory);
+        // Check if URL already exists (may be inactive/soft-deleted)
+        $check = $conn->prepare("SELECT id, isActive, isBase FROM sources WHERE url = ?");
+        $check->bind_param("s", $url);
+        $check->execute();
+        $existing = $check->get_result()->fetch_assoc();
+        $check->close();
+
+        // Admin creates base sources, regular users create non-base
+        $isBase = $is_admin ? 'Y' : 'N';
 
         try {
-            if ($stmt->execute()) {
-                $message = "✓ Source added successfully!";
-                $message_type = "success";
+            if ($existing) {
+                if ($existing['isActive'] === 'N') {
+                    // Reactivate the inactive source and update its details
+                    $stmt = $conn->prepare("UPDATE sources SET name = ?, isActive = 'Y', mainCategory = ?, isBase = ? WHERE id = ?");
+                    $stmt->bind_param("sssi", $name, $mainCategory, $isBase, $existing['id']);
+                    if ($stmt->execute()) {
+                        // Link to user if non-admin
+                        if (!$is_admin) {
+                            $link = $conn->prepare("INSERT IGNORE INTO users_sources (user_id, source_id) VALUES (?, ?)");
+                            $link->bind_param("ii", $user_id, $existing['id']);
+                            $link->execute();
+                            $link->close();
+                        }
+                        $message = "Source reactivated successfully!";
+                        $message_type = "success";
+                    } else {
+                        $message = "Error: " . $conn->error;
+                        $message_type = "error";
+                    }
+                    $stmt->close();
+                } else {
+                    // Source exists and is already active
+                    $message = "Error: This source is already active";
+                    $message_type = "error";
+                }
             } else {
-                $message = "✗ Error: " . $conn->error;
-                $message_type = "error";
+                // Source doesn't exist, insert new
+                $stmt = $conn->prepare("INSERT INTO sources (name, url, isActive, mainCategory, isBase) VALUES (?, ?, ?, ?, ?)");
+                $stmt->bind_param("sssss", $name, $url, $isActive, $mainCategory, $isBase);
+                if ($stmt->execute()) {
+                    $new_source_id = $conn->insert_id;
+                    // Link to user if non-admin
+                    if (!$is_admin) {
+                        $link = $conn->prepare("INSERT IGNORE INTO users_sources (user_id, source_id) VALUES (?, ?)");
+                        $link->bind_param("ii", $user_id, $new_source_id);
+                        $link->execute();
+                        $link->close();
+                    }
+                    $message = "Source added successfully!";
+                    $message_type = "success";
+                } else {
+                    $message = "Error: " . $conn->error;
+                    $message_type = "error";
+                }
+                $stmt->close();
             }
         } catch (mysqli_sql_exception $e) {
             if (strpos($e->getMessage(), 'Duplicate entry') !== false) {
@@ -35,44 +105,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $message_type = "error";
             }
         }
-        $stmt->close();
     }
 
     elseif ($action === 'update') {
         $id = (int)$_POST['id'];
         $name = trim($_POST['name']);
         $url = trim($_POST['url']);
-        $enabled = isset($_POST['enabled']) ? 1 : 0;
+        $isActive = isset($_POST['isActive']) ? 'Y' : 'N';
         $mainCategory = trim($_POST['mainCategory'] ?? 'Business');
 
-        $stmt = $conn->prepare("UPDATE sources SET name = ?, url = ?, enabled = ?, mainCategory = ? WHERE id = ?");
-        $stmt->bind_param("ssisi", $name, $url, $enabled, $mainCategory, $id);
+        // Non-admin users can only update sources they own
+        if (!$is_admin && !userOwnsSource($conn, $user_id, $id)) {
+            $message = "Error: You do not have permission to edit this source";
+            $message_type = "error";
+        } else {
+            $stmt = $conn->prepare("UPDATE sources SET name = ?, url = ?, isActive = ?, mainCategory = ? WHERE id = ?");
+            $stmt->bind_param("ssssi", $name, $url, $isActive, $mainCategory, $id);
 
-        try {
-            if ($stmt->execute()) {
-                $message = "✓ Source updated successfully!";
-                $message_type = "success";
-            } else {
-                $message = "✗ Error: " . $conn->error;
-                $message_type = "error";
+            try {
+                if ($stmt->execute()) {
+                    $message = "Source updated successfully!";
+                    $message_type = "success";
+                } else {
+                    $message = "Error: " . $conn->error;
+                    $message_type = "error";
+                }
+            } catch (mysqli_sql_exception $e) {
+                if (strpos($e->getMessage(), 'Duplicate entry') !== false) {
+                    $message = "Error: This URL or name is already used by another source";
+                    $message_type = "error";
+                } else {
+                    $message = "Error: " . $e->getMessage();
+                    $message_type = "error";
+                }
             }
-        } catch (mysqli_sql_exception $e) {
-            if (strpos($e->getMessage(), 'Duplicate entry') !== false) {
-                $message = "✗ Error: This URL or name is already used by another source";
-                $message_type = "error";
-            } else {
-                $message = "✗ Error: " . $e->getMessage();
-                $message_type = "error";
-            }
+            $stmt->close();
         }
-        $stmt->close();
     }
 
     elseif ($action === 'toggle') {
         $id = (int)$_POST['id'];
 
+        // Non-admin users can only toggle sources they own
+        if (!$is_admin && !userOwnsSource($conn, $user_id, $id)) {
+            echo json_encode(['success' => false, 'error' => 'Permission denied']);
+            $conn->close();
+            exit;
+        }
+
         // Get current status
-        $stmt = $conn->prepare("SELECT enabled FROM sources WHERE id = ?");
+        $stmt = $conn->prepare("SELECT isActive FROM sources WHERE id = ?");
         $stmt->bind_param("i", $id);
         $stmt->execute();
         $result = $stmt->get_result();
@@ -80,12 +162,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->close();
 
         // Toggle status
-        $new_status = $source['enabled'] ? 0 : 1;
-        $stmt = $conn->prepare("UPDATE sources SET enabled = ? WHERE id = ?");
-        $stmt->bind_param("ii", $new_status, $id);
+        $new_status = ($source['isActive'] === 'Y') ? 'N' : 'Y';
+        $stmt = $conn->prepare("UPDATE sources SET isActive = ? WHERE id = ?");
+        $stmt->bind_param("si", $new_status, $id);
 
         if ($stmt->execute()) {
-            echo json_encode(['success' => true, 'enabled' => $new_status]);
+            echo json_encode(['success' => true, 'isActive' => $new_status]);
             $stmt->close();
             $conn->close();
             exit;
@@ -100,22 +182,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     elseif ($action === 'delete') {
         $id = (int)$_POST['id'];
 
-        $stmt = $conn->prepare("DELETE FROM sources WHERE id = ?");
-        $stmt->bind_param("i", $id);
-
-        if ($stmt->execute()) {
-            $message = "✓ Source deleted successfully!";
-            $message_type = "success";
-        } else {
-            $message = "✗ Error: " . $conn->error;
+        // Non-admin users can only deactivate sources they own
+        if (!$is_admin && !userOwnsSource($conn, $user_id, $id)) {
+            $message = "Error: You do not have permission to deactivate this source";
             $message_type = "error";
+        } else {
+            // Soft delete: set isActive='N' instead of removing the row
+            $stmt = $conn->prepare("UPDATE sources SET isActive = 'N' WHERE id = ?");
+            $stmt->bind_param("i", $id);
+
+            if ($stmt->execute()) {
+                $message = "Source deactivated successfully!";
+                $message_type = "success";
+            } else {
+                $message = "Error: " . $conn->error;
+                $message_type = "error";
+            }
+            $stmt->close();
         }
-        $stmt->close();
     }
 }
 
-// Get all sources
-$sources_result = $conn->query("SELECT * FROM sources ORDER BY created_at DESC");
+// Get sources filtered by user visibility
+if ($is_admin) {
+    // Admin sees all sources
+    $sources_result = $conn->query("SELECT * FROM sources ORDER BY name ASC");
+} else {
+    // Regular users see base sources + their own linked sources
+    $sources_stmt = $conn->prepare("SELECT s.* FROM sources s WHERE s.isBase = 'Y' OR (s.isBase = 'N' AND s.id IN (SELECT source_id FROM users_sources WHERE user_id = ?)) ORDER BY s.name ASC");
+    $sources_stmt->bind_param("i", $user_id);
+    $sources_stmt->execute();
+    $sources_result = $sources_stmt->get_result();
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -384,6 +482,9 @@ $sources_result = $conn->query("SELECT * FROM sources ORDER BY created_at DESC")
                 <tbody>
                     <?php while ($source = $sources_result->fetch_assoc()):
                         $categoryClass = 'category-' . strtolower($source['mainCategory'] ?? 'business');
+                        $isSourceActive = ($source['isActive'] == 'Y');
+                        $isBaseSource = ($source['isBase'] == 'Y');
+                        $canModify = $is_admin || (!$isBaseSource && userOwnsSource($conn, $user_id, $source['id']));
                     ?>
                         <tr>
                             <td><strong><?php echo htmlspecialchars($source['name']); ?></strong></td>
@@ -398,24 +499,34 @@ $sources_result = $conn->query("SELECT * FROM sources ORDER BY created_at DESC")
                                 </span>
                             </td>
                             <td>
-                                <button class="btn <?php echo $source['enabled'] ? 'btn-success' : 'btn-secondary'; ?>"
+                                <?php if ($canModify): ?>
+                                <button class="btn <?php echo $isSourceActive ? 'btn-success' : 'btn-secondary'; ?>"
                                         id="toggle-<?php echo $source['id']; ?>"
-                                        onclick="toggleSource(<?php echo $source['id']; ?>, <?php echo $source['enabled']; ?>)"
+                                        onclick="toggleSource(<?php echo $source['id']; ?>, '<?php echo $source['isActive']; ?>')"
                                         style="white-space: nowrap;">
-                                    <?php echo $source['enabled'] ? '✓ Enabled' : 'Disabled'; ?>
+                                    <?php echo $isSourceActive ? 'Active' : 'Inactive'; ?>
                                 </button>
+                                <?php else: ?>
+                                <span class="status-badge <?php echo $isSourceActive ? 'status-enabled' : 'status-disabled'; ?>">
+                                    <?php echo $isSourceActive ? 'Active' : 'Inactive'; ?>
+                                </span>
+                                <?php endif; ?>
                             </td>
                             <td><?php echo $source['last_scraped'] ?? 'Never'; ?></td>
                             <td><?php echo $source['articles_count']; ?></td>
                             <td>
+                                <?php if ($canModify): ?>
                                 <button class="btn" onclick='editSource(<?php echo json_encode($source); ?>)'>
                                     Edit
                                 </button>
-                                <form method="POST" style="display: inline;" onsubmit="return confirm('Delete this source?');">
+                                <form method="POST" style="display: inline;" onsubmit="return confirm('Deactivate this source? It can be reactivated later.');">
                                     <input type="hidden" name="action" value="delete">
                                     <input type="hidden" name="id" value="<?php echo $source['id']; ?>">
-                                    <button type="submit" class="btn btn-danger">Delete</button>
+                                    <button type="submit" class="btn btn-danger">Deactivate</button>
                                 </form>
+                                <?php else: ?>
+                                <span style="color: #999; font-size: 0.9em;">View only</span>
+                                <?php endif; ?>
                             </td>
                         </tr>
                     <?php endwhile; ?>
@@ -445,21 +556,26 @@ $sources_result = $conn->query("SELECT * FROM sources ORDER BY created_at DESC")
                 <div class="form-group">
                     <label>Main Category</label>
                     <div class="radio-button-group">
-                        <input type="radio" name="mainCategory" id="catBusiness" value="Business" checked>
-                        <label for="catBusiness">Business</label>
-
-                        <input type="radio" name="mainCategory" id="catTechnology" value="Technology">
-                        <label for="catTechnology">Technology</label>
-
-                        <input type="radio" name="mainCategory" id="catSports" value="Sports">
-                        <label for="catSports">Sports</label>
+                        <?php
+                        // Get all level 1 (parent) categories dynamically
+                        $level1_cats = get_level1_categories($conn);
+                        $first = true;
+                        foreach ($level1_cats as $cat):
+                            $cat_id = 'cat' . str_replace(' ', '', $cat['name']);
+                        ?>
+                        <input type="radio" name="mainCategory" id="<?php echo $cat_id; ?>" value="<?php echo htmlspecialchars($cat['name']); ?>"<?php echo $first ? ' checked' : ''; ?>>
+                        <label for="<?php echo $cat_id; ?>"><?php echo htmlspecialchars($cat['name']); ?></label>
+                        <?php
+                            $first = false;
+                        endforeach;
+                        ?>
                     </div>
                 </div>
 
                 <div class="form-group">
                     <label>
-                        <input type="checkbox" name="enabled" id="sourceEnabled" checked>
-                        Enabled
+                        <input type="checkbox" name="isActive" id="sourceEnabled" checked>
+                        Active
                     </label>
                 </div>
 
@@ -491,16 +607,14 @@ $sources_result = $conn->query("SELECT * FROM sources ORDER BY created_at DESC")
             document.getElementById('sourceId').value = source.id;
             document.getElementById('sourceName').value = source.name;
             document.getElementById('sourceUrl').value = source.url;
-            document.getElementById('sourceEnabled').checked = source.enabled == 1;
+            document.getElementById('sourceEnabled').checked = source.isActive === 'Y';
 
-            // Set the correct main category radio button
+            // Set the correct main category radio button dynamically
             const mainCategory = source.mainCategory || 'Business';
-            if (mainCategory === 'Business') {
-                document.getElementById('catBusiness').checked = true;
-            } else if (mainCategory === 'Technology') {
-                document.getElementById('catTechnology').checked = true;
-            } else if (mainCategory === 'Sports') {
-                document.getElementById('catSports').checked = true;
+            const catId = 'cat' + mainCategory.replace(/\s+/g, ''); // Remove spaces from category name
+            const radioBtn = document.getElementById(catId);
+            if (radioBtn) {
+                radioBtn.checked = true;
             }
 
             openModal('edit');
@@ -526,14 +640,14 @@ $sources_result = $conn->query("SELECT * FROM sources ORDER BY created_at DESC")
             .then(data => {
                 if (data.success) {
                     // Update button appearance
-                    if (data.enabled) {
+                    if (data.isActive === 'Y') {
                         btn.className = 'btn btn-success';
-                        btn.textContent = '✓ Enabled';
+                        btn.textContent = '✓ Active';
                     } else {
                         btn.className = 'btn btn-secondary';
-                        btn.textContent = 'Disabled';
+                        btn.textContent = 'Inactive';
                     }
-                    btn.setAttribute('onclick', `toggleSource(${id}, ${data.enabled})`);
+                    btn.setAttribute('onclick', `toggleSource(${id}, '${data.isActive}')`);
                 } else {
                     alert('Error toggling source: ' + (data.error || 'Unknown error'));
                     btn.textContent = originalText;

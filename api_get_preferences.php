@@ -32,9 +32,9 @@ try {
 
     // Get sources visible to this user
     if ($current_user['isAdmin'] == 'Y') {
-        $sources_result = $conn->query("SELECT id, name FROM sources WHERE enabled = 1 ORDER BY name");
+        $sources_result = $conn->query("SELECT id, name FROM sources WHERE isActive = 'Y' ORDER BY name");
     } else {
-        $vis_stmt = $conn->prepare("SELECT id, name FROM sources WHERE enabled = 1 AND (isBase = 'Y' OR (isBase = 'N' AND id IN (SELECT source_id FROM users_sources WHERE user_id = ?))) ORDER BY name");
+        $vis_stmt = $conn->prepare("SELECT id, name FROM sources WHERE isActive = 'Y' AND (isBase = 'Y' OR (isBase = 'N' AND id IN (SELECT source_id FROM users_sources WHERE user_id = ?))) ORDER BY name");
         $vis_stmt->bind_param("i", $user_id);
         $vis_stmt->execute();
         $sources_result = $vis_stmt->get_result();
@@ -44,8 +44,15 @@ try {
         $sources[] = $source;
     }
 
-    // Get all categories
-    $categories_result = $conn->query("SELECT id, name FROM categories ORDER BY name");
+    // Get level 1 (parent) categories
+    $parent_result = $conn->query("SELECT id, name FROM categories WHERE level = 1 ORDER BY name");
+    $parent_categories = [];
+    while ($parent = $parent_result->fetch_assoc()) {
+        $parent_categories[] = $parent;
+    }
+
+    // Get level 2 (child) categories for preference checkboxes
+    $categories_result = $conn->query("SELECT id, name, parentID FROM categories WHERE level = 2 ORDER BY name");
     $categories = [];
     while ($category = $categories_result->fetch_assoc()) {
         $categories[] = $category;
@@ -56,7 +63,8 @@ try {
         'success' => true,
         'preferences' => $preferences,
         'sources' => $sources,
-        'categories' => $categories
+        'categories' => $categories,
+        'parent_categories' => $parent_categories
     ]);
 
 } catch (Exception $e) {

@@ -36,8 +36,12 @@ try {
     $categories = isset($data['categories']) ? array_map('intval', $data['categories']) : [];
     $defaultView = isset($data['defaultView']) ? $data['defaultView'] : 'all';
 
-    // Validate defaultView
-    $valid_views = ['all', 'tech', 'business', 'sports'];
+    // Validate defaultView dynamically from level 1 categories
+    $valid_views = ['all'];
+    $views_result = $conn->query("SELECT LOWER(name) AS view_name FROM categories WHERE level = 1 ORDER BY name");
+    while ($view_row = $views_result->fetch_assoc()) {
+        $valid_views[] = $view_row['view_name'];
+    }
     if (!in_array($defaultView, $valid_views)) {
         $defaultView = 'all';
     }

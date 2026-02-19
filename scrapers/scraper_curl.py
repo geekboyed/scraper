@@ -329,7 +329,7 @@ class CurlScraper:
     def get_enabled_sources(self):
         """Get enabled sources"""
         cursor = self.connection.cursor(dictionary=True)
-        cursor.execute("SELECT id, name, url FROM sources WHERE enabled = 1")
+        cursor.execute("SELECT id, name, url FROM sources WHERE isActive = 'Y'")
         sources = cursor.fetchall()
         cursor.close()
         return sources
@@ -376,11 +376,13 @@ class CurlScraper:
             self.source_id = source['id']
             self.base_url = source['url']
 
-            # Use RSS for The Verge and VentureBeat
+            # Use RSS for sites that block bots
             if source['id'] == 12:  # The Verge
                 articles = self.scrape_rss_feed('https://www.theverge.com/rss/index.xml')
             elif source['id'] == 13:  # VentureBeat
                 articles = self.scrape_rss_feed('https://venturebeat.com/feed/')
+            elif source['id'] == 48:  # sfGate (PerimeterX bot protection)
+                articles = self.scrape_rss_feed('https://www.sfgate.com/bayarea/feed/bay-area-news-429.php')
             else:
                 articles = self.scrape_homepage()
 

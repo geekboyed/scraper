@@ -826,6 +826,13 @@ $total_count = count($users);
             }
         });
     </script>
+
+    <!-- Close/Back Button -->
+    <div style="max-width: 1400px; margin: 0 auto; padding: 20px; text-align: center; border-top: 2px solid #e0e0e0;">
+        <a href="index.php" class="btn btn-secondary" style="padding: 12px 30px; font-size: 16px;">
+            ← Back to Dashboard
+        </a>
+    </div>
 </body>
 </html>
 <?php $conn->close(); ?>

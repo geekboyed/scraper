@@ -33,6 +33,24 @@ if ($current_user && $current_user['preferenceJSON']) {
     }
 }
 
+// Load level 1 (parent) categories for dynamic UI
+$level1_categories = get_level1_categories($conn);
+$categories_grouped = get_categories_grouped($conn);
+
+// Map level 1 category names to URL parameter slugs and icons
+$category_slug_map = [
+    'Business' => 'business',
+    'Technology' => 'tech',
+    'Sports' => 'sports',
+    'General' => 'general'
+];
+$category_icon_map = [
+    'Business' => '💼',
+    'Technology' => '🖥️',
+    'Sports' => '⚽',
+    'General' => '🌐'
+];
+
 // Get filter parameters
 $category_filter = isset($_GET['category']) ? (is_array($_GET['category']) ? array_map('intval', $_GET['category']) : [(int)$_GET['category']]) : [];
 $source_filter = isset($_GET['source']) ? (is_array($_GET['source']) ? array_map('intval', $_GET['source']) : [(int)$_GET['source']]) : [];
@@ -43,27 +61,19 @@ $page_size = isset($_GET['size']) ? (int)$_GET['size'] : 50;
 
 // Apply default view if no explicit filter is set in URL
 $has_explicit_filter = !empty($category_filter) || !empty($source_filter) ||
-                       isset($_GET['tech']) || isset($_GET['business']) || isset($_GET['sports']);
+                       isset($_GET['tech']) || isset($_GET['business']) || isset($_GET['sports']) || isset($_GET['general']);
 
 if (!$has_explicit_filter && $default_view !== 'all') {
-    // Auto-redirect to apply default view
-    $redirect_url = 'index.php?';
-    switch ($default_view) {
-        case 'tech':
-            $redirect_url .= 'tech=1';
-            break;
-        case 'business':
-            $redirect_url .= 'business=1';
-            break;
-        case 'sports':
-            $redirect_url .= 'sports=1';
-            break;
+    // Auto-redirect to apply default view - supports dynamic parent category names
+    $valid_views = ['tech', 'business', 'sports', 'general'];
+    if (in_array($default_view, $valid_views)) {
+        $redirect_url = 'index.php?' . urlencode($default_view) . '=1';
+        if ($date_filter !== '1day') {
+            $redirect_url .= '&date=' . urlencode($date_filter);
+        }
+        header('Location: ' . $redirect_url);
+        exit;
     }
-    if ($date_filter !== '1day') {
-        $redirect_url .= '&date=' . urlencode($date_filter);
-    }
-    header('Location: ' . $redirect_url);
-    exit;
 }
 
 // Build query
@@ -80,24 +90,61 @@ $where = [];
 $params = [];
 $types = '';
 
-// Tech filter - show only technology categories
+// Parent category filter flags (used in template for hidden form fields)
 $tech_filter = isset($_GET['tech']) && $_GET['tech'] == '1';
-// Business filter - show only business categories
 $business_filter = isset($_GET['business']) && $_GET['business'] == '1';
-// Sports filter - show only sports categories
 $sports_filter = isset($_GET['sports']) && $_GET['sports'] == '1';
+$general_filter = isset($_GET['general']) && $_GET['general'] == '1';
 
-if ($tech_filter) {
-    // Technology categories: 2=Technology, 7=Automotive, 8=Media, 16=Crypto, 17=AI&ML, 18=Cybersecurity, 19=Cloud, 20=Hardware, 21=Software, 22=Robotics
-    $where[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a.id AND category_id IN (2, 7, 8, 16, 17, 18, 19, 20, 21, 22))";
-} elseif ($business_filter) {
-    // Business categories: 1=Finance, 3=Retail, 9=Economy, 10=Markets, 11=Leadership, 12=Startups, 13=Global Business, 14=Legal, 15=Labor
-    $where[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a.id AND category_id IN (1, 3, 9, 10, 11, 12, 13, 14, 15))";
-} elseif ($sports_filter) {
-    // Sports categories: 23=Sports
-    $where[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a.id AND category_id IN (23))";
+// Map URL parameter names to parent category names
+$parent_filter_map = [
+    'tech' => 'Technology',
+    'business' => 'Business',
+    'sports' => 'Sports',
+    'general' => 'General'
+];
+
+// Check which parent filter is active
+$active_parent_filter = null;
+foreach ($parent_filter_map as $param => $parent_name) {
+    if (isset($_GET[$param]) && $_GET[$param] == '1') {
+        $active_parent_filter = $parent_name;
+        break;
+    }
+}
+
+// Track whether the parent filter came from a URL param (e.g. ?sports=1) or was inferred from category_filter
+$parent_filter_from_url = ($active_parent_filter !== null);
+
+// If no parent filter but category_filter is set, determine parent from first category (for UI highlighting only)
+if (!$active_parent_filter && !empty($category_filter)) {
+    $first_cat_id = $category_filter[0];
+    $parent_query = $conn->prepare("SELECT p.name FROM categories c JOIN categories p ON c.parentID = p.id WHERE c.id = ? AND c.level = 2 LIMIT 1");
+    $parent_query->bind_param('i', $first_cat_id);
+    $parent_query->execute();
+    $parent_result = $parent_query->get_result();
+    if ($parent_row = $parent_result->fetch_assoc()) {
+        $active_parent_filter = $parent_row['name'];
+    }
+    $parent_query->close();
+}
+
+if ($parent_filter_from_url && $active_parent_filter) {
+    // Parent filter from URL (e.g. ?sports=1) - show all children of that parent
+    $parent_id = get_parent_category_id($conn, $active_parent_filter);
+    if ($parent_id) {
+        $child_ids = get_child_category_ids($conn, $parent_id);
+        if (!empty($child_ids)) {
+            $placeholders = implode(',', array_fill(0, count($child_ids), '?'));
+            $where[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a.id AND category_id IN ($placeholders))";
+            foreach ($child_ids as $cid) {
+                $params[] = $cid;
+                $types .= 'i';
+            }
+        }
+    }
 } elseif (!empty($category_filter)) {
-    // Handle multiple category selection
+    // Specific category selection (e.g. ?category[]=42) - filter by exact categories
     $placeholders = implode(',', array_fill(0, count($category_filter), '?'));
     $where[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a.id AND category_id IN ($placeholders))";
     foreach ($category_filter as $cat_id) {
@@ -210,7 +257,7 @@ $result = $stmt->get_result();
 
 // Get all categories for filter with counts based on current filters
 // Use subquery to count matching articles while keeping all categories
-$categories_query = "SELECT c.id, c.name,
+$categories_query = "SELECT c.id, c.name, c.parentID, p.name AS parent_name,
     (SELECT COUNT(DISTINCT a2.id)
      FROM articles a2
      JOIN article_categories ac2 ON a2.id = ac2.article_id
@@ -261,7 +308,9 @@ if (!empty($cat_conditions)) {
 
 $categories_query .= ") as article_count
     FROM categories c
-    ORDER BY c.name";
+    LEFT JOIN categories p ON c.parentID = p.id
+    WHERE c.level = 2
+    ORDER BY p.name, c.name";
 
 if (!empty($cat_params)) {
     $cat_stmt = $conn->prepare($categories_query);
@@ -284,7 +333,20 @@ $sources_params = [];
 $sources_types = '';
 
 // Apply same filters as main query (except source filter)
-if (!empty($category_filter)) {
+if ($parent_filter_from_url && $active_parent_filter) {
+    $parent_id = get_parent_category_id($conn, $active_parent_filter);
+    if ($parent_id) {
+        $child_ids = get_child_category_ids($conn, $parent_id);
+        if (!empty($child_ids)) {
+            $placeholders = implode(',', array_fill(0, count($child_ids), '?'));
+            $sources_conditions[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a2.id AND category_id IN ($placeholders))";
+            foreach ($child_ids as $cid) {
+                $sources_params[] = $cid;
+                $sources_types .= 'i';
+            }
+        }
+    }
+} elseif (!empty($category_filter)) {
     $placeholders = implode(',', array_fill(0, count($category_filter), '?'));
     $sources_conditions[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a2.id AND category_id IN ($placeholders))";
     foreach ($category_filter as $cat_id) {
@@ -324,7 +386,7 @@ if (!empty($sources_conditions)) {
 
 $sources_query .= ") as article_count
     FROM sources s
-    WHERE s.enabled = 1";
+    WHERE s.isActive = 'Y'";
 
 // Filter sources by user visibility: base sources + user's linked sources
 if ($current_user && $current_user['isAdmin'] != 'Y') {
@@ -346,12 +408,12 @@ if (!empty($sources_params)) {
 
 // Get all sources with main category for sources modal
 if ($current_user && $current_user['isAdmin'] != 'Y') {
-    $all_sources_stmt = $conn->prepare("SELECT id, name, mainCategory, enabled, articles_count FROM sources WHERE isBase = 'Y' OR (isBase = 'N' AND id IN (SELECT source_id FROM users_sources WHERE user_id = ?)) ORDER BY name ASC");
+    $all_sources_stmt = $conn->prepare("SELECT id, name, mainCategory, isActive, articles_count FROM sources WHERE isBase = 'Y' OR (isBase = 'N' AND id IN (SELECT source_id FROM users_sources WHERE user_id = ?)) ORDER BY name ASC");
     $all_sources_stmt->bind_param("i", $current_user['id']);
     $all_sources_stmt->execute();
     $all_sources_result = $all_sources_stmt->get_result();
 } else {
-    $all_sources_result = $conn->query("SELECT id, name, mainCategory, enabled, articles_count FROM sources ORDER BY name ASC");
+    $all_sources_result = $conn->query("SELECT id, name, mainCategory, isActive, articles_count FROM sources ORDER BY name ASC");
 }
 $all_sources = [];
 while ($source = $all_sources_result->fetch_assoc()) {
@@ -438,6 +500,14 @@ if ($last_scrape_time !== 'Never') {
             font-size: 0.7em;
             font-weight: 600;
             margin-left: 10px;
+        }
+
+        .category-dropdown a:last-child {
+            border-bottom: none !important;
+        }
+
+        .category-dropdown a:hover {
+            background: #f1f5f9 !important;
         }
 
         .controls {
@@ -1064,12 +1134,10 @@ if ($last_scrape_time !== 'Never') {
 
             .header-buttons-row {
                 flex-wrap: wrap !important;
-                justify-content: center !important;
             }
 
             .header-buttons-row .btn,
             .header-buttons-row .tooltip-wrapper {
-                flex: 1 1 auto;
                 min-width: 0;
             }
 
@@ -1836,14 +1904,6 @@ if ($last_scrape_time !== 'Never') {
             document.getElementById('scrapeResultsModal').style.display = 'none';
         }
 
-        function showSourcesModal() {
-            const modal = document.getElementById('sourcesModal');
-            modal.style.display = 'block';
-        }
-
-        function closeSourcesModal() {
-            document.getElementById('sourcesModal').style.display = 'none';
-        }
 
         function closeErrorModal() {
             document.getElementById('errorsModal').style.display = 'none';
@@ -1925,33 +1985,122 @@ if ($last_scrape_time !== 'Never') {
                     sourcesDiv.appendChild(label);
                 });
 
-                // Populate categories checkboxes
+                // Populate categories checkboxes (grouped by parent)
                 const categoriesDiv = document.getElementById('categoriesCheckboxes');
                 categoriesDiv.innerHTML = '';
+
+                // Group categories by parentID
+                const grouped = {};
+                const parentNames = {};
+                if (data.parent_categories) {
+                    data.parent_categories.forEach(p => {
+                        parentNames[p.id] = p.name;
+                        grouped[p.id] = [];
+                    });
+                }
                 data.categories.forEach(category => {
-                    const isChecked = !data.preferences || !data.preferences.categories ||
-                                     data.preferences.categories.length === 0 ||
-                                     data.preferences.categories.includes(parseInt(category.id));
-                    const label = document.createElement('label');
-                    label.style.cssText = 'display: flex; align-items: center; cursor: pointer; padding: 5px;';
-                    const checkbox = document.createElement('input');
-                    checkbox.type = 'checkbox';
-                    checkbox.className = 'pref-category';
-                    checkbox.value = category.id;
-                    checkbox.checked = isChecked;
-                    checkbox.style.cssText = 'margin-right: 8px; cursor: pointer;';
-                    const span = document.createElement('span');
-                    span.textContent = category.name;
-                    label.appendChild(checkbox);
-                    label.appendChild(span);
-                    categoriesDiv.appendChild(label);
+                    const pid = category.parentID || 'none';
+                    if (!grouped[pid]) grouped[pid] = [];
+                    grouped[pid].push(category);
                 });
 
-                // Set default view radio button
-                const defaultView = (data.preferences && data.preferences.defaultView) ? data.preferences.defaultView : 'all';
-                const defaultViewRadios = document.querySelectorAll('.pref-default-view');
-                defaultViewRadios.forEach(radio => {
-                    radio.checked = (radio.value === defaultView);
+                // Create level 1 category checkboxes
+                const level1ButtonsDiv = document.createElement('div');
+                level1ButtonsDiv.style.cssText = 'display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 2px solid #e0e0e0;';
+
+                if (data.parent_categories) {
+                    data.parent_categories.forEach(parent => {
+                        const label = document.createElement('label');
+                        label.style.cssText = 'display: inline-flex; align-items: center; padding: 10px 20px; background: #e0e0e0; color: #334155; border: 2px solid #cbd5e1; border-radius: 6px; font-weight: 600; cursor: pointer; transition: all 0.2s;';
+                        label.dataset.parentId = parent.id;
+
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.className = 'pref-level1-filter';
+                        checkbox.dataset.parentId = parent.id;
+                        checkbox.style.cssText = 'margin-right: 10px; cursor: pointer; width: 18px; height: 18px;';
+                        checkbox.onchange = function() {
+                            // Update label styling
+                            if (this.checked) {
+                                label.style.background = '#2563eb';
+                                label.style.color = 'white';
+                                label.style.borderColor = '#2563eb';
+                            } else {
+                                label.style.background = '#e0e0e0';
+                                label.style.color = '#334155';
+                                label.style.borderColor = '#cbd5e1';
+                            }
+
+                            // Show/hide level 2 groups based on checked level 1 filters
+                            const checkedParents = Array.from(document.querySelectorAll('.pref-level1-filter:checked'))
+                                .map(cb => cb.dataset.parentId);
+
+                            document.querySelectorAll('.pref-level2-group').forEach(g => {
+                                if (checkedParents.length === 0) {
+                                    // No filters selected - show all
+                                    g.style.display = 'block';
+                                } else {
+                                    // Show only selected parents' children
+                                    g.style.display = checkedParents.includes(g.dataset.parentId) ? 'block' : 'none';
+                                }
+                            });
+                        };
+
+                        const span = document.createElement('span');
+                        span.textContent = parent.name;
+
+                        label.appendChild(checkbox);
+                        label.appendChild(span);
+                        level1ButtonsDiv.appendChild(label);
+                    });
+                }
+                categoriesDiv.appendChild(level1ButtonsDiv);
+
+                // Render grouped categories (level 2)
+                const parentOrder = data.parent_categories ? data.parent_categories.map(p => p.id) : Object.keys(grouped);
+                parentOrder.forEach(pid => {
+                    const children = grouped[pid] || [];
+                    if (children.length === 0) return;
+
+                    const groupDiv = document.createElement('div');
+                    groupDiv.className = 'pref-level2-group';
+                    groupDiv.dataset.parentId = pid;
+                    groupDiv.style.cssText = 'margin-bottom: 15px;';
+
+                    if (parentNames[pid]) {
+                        const header = document.createElement('div');
+                        header.style.cssText = 'font-weight: 700; font-size: 14px; color: #2563eb; margin-bottom: 8px; padding-bottom: 5px; border-bottom: 1px solid #e0e0e0;';
+                        header.textContent = parentNames[pid];
+                        groupDiv.appendChild(header);
+                    }
+
+                    const childrenGrid = document.createElement('div');
+                    childrenGrid.style.cssText = 'display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 5px;';
+
+                    children.forEach(category => {
+                        const isChecked = !data.preferences || !data.preferences.categories ||
+                                         data.preferences.categories.length === 0 ||
+                                         data.preferences.categories.includes(parseInt(category.id));
+                        const label = document.createElement('label');
+                        label.style.cssText = 'display: flex; align-items: center; cursor: pointer; padding: 5px 8px; border-radius: 4px; transition: background 0.2s;';
+                        label.onmouseover = function() { this.style.background = '#f1f5f9'; };
+                        label.onmouseout = function() { this.style.background = 'transparent'; };
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.className = 'pref-category';
+                        checkbox.value = category.id;
+                        checkbox.checked = isChecked;
+                        checkbox.style.cssText = 'margin-right: 8px; cursor: pointer;';
+                        const span = document.createElement('span');
+                        span.style.fontSize = '14px';
+                        span.textContent = category.name;
+                        label.appendChild(checkbox);
+                        label.appendChild(span);
+                        childrenGrid.appendChild(label);
+                    });
+
+                    groupDiv.appendChild(childrenGrid);
+                    categoriesDiv.appendChild(groupDiv);
                 });
 
                 // Show modal
@@ -1975,10 +2124,6 @@ if ($last_scrape_time !== 'Never') {
                 const categories = Array.from(document.querySelectorAll('.pref-category:checked'))
                     .map(cb => parseInt(cb.value));
 
-                // Get selected default view
-                const defaultViewRadio = document.querySelector('.pref-default-view:checked');
-                const defaultView = defaultViewRadio ? defaultViewRadio.value : 'all';
-
                 // Save preferences
                 const response = await fetch('api_save_preferences.php', {
                     method: 'POST',
@@ -1987,8 +2132,7 @@ if ($last_scrape_time !== 'Never') {
                     },
                     body: JSON.stringify({
                         sources: sources,
-                        categories: categories,
-                        defaultView: defaultView
+                        categories: categories
                     })
                 });
 
@@ -2133,6 +2277,32 @@ if ($last_scrape_time !== 'Never') {
             const url = 'index.php' + (params.toString() ? '?' + params.toString() : '');
             window.location.href = url;
         }
+
+        // Category dropdown toggle
+        function toggleCategoryDropdown(categorySlug) {
+            const dropdown = document.getElementById('dropdown-' + categorySlug);
+            const isVisible = dropdown.style.display === 'block';
+
+            // Close all other dropdowns first
+            document.querySelectorAll('.category-dropdown').forEach(dd => {
+                dd.style.display = 'none';
+            });
+
+            // Toggle this dropdown
+            dropdown.style.display = isVisible ? 'none' : 'block';
+        }
+
+        // Close dropdowns when clicking outside
+        document.addEventListener('click', function(event) {
+            const isDropdownButton = event.target.closest('.category-arrow-btn');
+            const isDropdownContent = event.target.closest('.category-dropdown');
+
+            if (!isDropdownButton && !isDropdownContent) {
+                document.querySelectorAll('.category-dropdown').forEach(dd => {
+                    dd.style.display = 'none';
+                });
+            }
+        });
 
         // Select/Clear All functions
         function selectAllSources() {
@@ -2405,14 +2575,23 @@ if ($last_scrape_time !== 'Never') {
 
     <div class="container">
         <header>
-            <div>
-                <h1>📰 News Dashboard</h1>
-                <p class="subtitle">Latest business news articles, automatically scraped and categorized</p>
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 15px; flex-wrap: wrap; width: 100%; flex-basis: 100%;">
+                <div>
+                    <h1>📰 News Dashboard</h1>
+                    <p class="subtitle">Latest business news articles, automatically scraped and categorized</p>
+                </div>
+                <div style="display: flex; gap: 10px; align-items: center; flex-shrink: 0;">
+                    <a href="sources.php" class="btn" style="height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; padding: 12px 20px;">Sources</a>
+                    <button onclick="showPreferencesModal()" class="btn" style="height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; padding: 12px 20px; gap: 5px;">
+                        ⚙️
+                    </button>
+                    <a href="logout.php" class="btn btn-secondary" style="height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap;">Logout</a>
+                </div>
             </div>
-            <div class="header-actions" style="display: flex; flex-direction: column; gap: 10px; align-items: flex-end;">
+            <div class="header-actions" style="display: flex; flex-direction: column; gap: 10px; align-items: stretch;">
                 <!-- Main Action Buttons Row -->
-                <div class="header-buttons-row" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end;">
-                    <?php if ($current_user && $current_user['isAdmin'] == 'Y'): ?>
+                <?php if ($current_user && $current_user['isAdmin'] == 'Y'): ?>
+                <div class="header-buttons-row" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
                     <div class="tooltip-wrapper">
                         <button id="scrapeBtn" class="btn btn-success" onclick="startScrape()" style="min-width: 120px; height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap;">
                             <span id="scrapeIcon">🔄</span> <span id="scrapeText">Scrape</span>
@@ -2432,35 +2611,20 @@ if ($last_scrape_time !== 'Never') {
                     <button id="errorsBtn" class="btn btn-danger" onclick="checkErrors()" style="min-width: 120px; height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap;">
                         <span id="errorsIcon">⚠️</span> <span id="errorsText">Errors</span>
                     </button>
-                    <a href="sources.php" class="btn" style="min-width: 120px; text-align: center; height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap;">Sources</a>
-                    <?php endif; ?>
-                    <?php if ($current_user):
-                        $is_admin = ($current_user['isAdmin'] == 'Y');
-                        $remaining = isset($current_user['sourceCount']) ? (int)$current_user['sourceCount'] : 0;
-                        $limit_reached = !$is_admin && $remaining <= 0;
-                    ?>
-                    <button id="addSourceBtn" onclick="showAddSourceModal()" class="btn btn-success" style="height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; padding: 12px 20px; gap: 5px;<?php echo $limit_reached ? ' opacity: 0.5; cursor: not-allowed;' : ''; ?>"
-                            data-is-admin="<?php echo $current_user['isAdmin']; ?>"
-                            data-source-limit="<?php echo $is_admin ? 'unlimited' : '5'; ?>"
-                            data-source-count="<?php echo $remaining; ?>"
-                            <?php echo $limit_reached ? 'disabled title="No more sources available"' : ''; ?>>
-                        + Add Source
-                    </button>
-                    <?php endif; ?>
-                    <button onclick="showPreferencesModal()" class="btn" style="height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; padding: 12px 20px; gap: 5px;">
-                        ⚙️ Preferences
-                    </button>
-                    <a href="logout.php" class="btn btn-secondary" style="height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap;">Logout</a>
                 </div>
+                <?php endif; ?>
                 <!-- Management Buttons Row (Admin Only) -->
                 <?php if ($current_user && $current_user['isAdmin'] == 'Y'): ?>
-                <div class="header-buttons-row" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end;">
+                <div class="header-buttons-row" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
                     <a href="admin_users.php" class="btn" style="text-align: center; height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; padding: 12px 20px;">
                         👥 Manage Users
                     </a>
                     <a href="admin_invites.php" class="btn" style="text-align: center; height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; padding: 12px 20px;">
                         🎫 Manage Codes
                     </a>
+                    <button onclick="showCategoryManagementModal()" class="btn" style="text-align: center; height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; padding: 12px 20px;">
+                        🏷️ Manage Categories
+                    </button>
                 </div>
                 <?php endif; ?>
             </div>
@@ -2470,27 +2634,60 @@ if ($last_scrape_time !== 'Never') {
         <div class="controls" style="flex-direction: column; align-items: stretch;">
             <!-- Quick Filter Buttons -->
             <!-- Line 1: Category Buttons and Search -->
+            <?php
+            // Pre-fetch all level 2 categories grouped by parent
+            $children_by_parent = [];
+            $all_children_result = $conn->query("SELECT id, name, parentID FROM categories WHERE level = 2 ORDER BY parentID, name");
+            while ($child_row = $all_children_result->fetch_assoc()) {
+                $parent_id = (int)$child_row['parentID'];
+                if (!isset($children_by_parent[$parent_id])) {
+                    $children_by_parent[$parent_id] = [];
+                }
+                $children_by_parent[$parent_id][] = [
+                    'id' => (int)$child_row['id'],
+                    'name' => $child_row['name']
+                ];
+            }
+            ?>
             <div class="quick-filters-row" style="margin-bottom: 8px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
                 <a href="?date=1day"
                    class="btn"
-                   style="<?php echo (!isset($_GET['tech']) && !isset($_GET['business']) && !isset($_GET['sports']) && empty($category_filter)) ? 'background: #2563eb; color: white;' : 'background: #f8f9fa; color: #334155; border: 2px solid #2563eb;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
+                   style="<?php echo (!$active_parent_filter && empty($category_filter)) ? 'background: #2563eb; color: white;' : 'background: #f8f9fa; color: #334155; border: 2px solid #2563eb;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
                     📰 All Articles
                 </a>
-                <a href="?tech=1&date=1day"
-                   class="btn"
-                   style="<?php echo isset($_GET['tech']) ? 'background: #2563eb; color: white;' : 'background: #f8f9fa; color: #334155; border: 2px solid #2563eb;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
-                    🖥️ Technology
-                </a>
-                <a href="?business=1&date=1day"
-                   class="btn"
-                   style="<?php echo isset($_GET['business']) ? 'background: #2563eb; color: white;' : 'background: #f8f9fa; color: #334155; border: 2px solid #2563eb;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
-                    💼 Business
-                </a>
-                <a href="?sports=1&date=1day"
-                   class="btn"
-                   style="<?php echo isset($_GET['sports']) ? 'background: #2563eb; color: white;' : 'background: #f8f9fa; color: #334155; border: 2px solid #2563eb;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
-                    ⚽ Sports
-                </a>
+                <?php foreach ($level1_categories as $l1_cat):
+                    $slug = isset($category_slug_map[$l1_cat['name']]) ? $category_slug_map[$l1_cat['name']] : strtolower($l1_cat['name']);
+                    $icon = isset($category_icon_map[$l1_cat['name']]) ? $category_icon_map[$l1_cat['name']] : '📂';
+                    $is_active = ($active_parent_filter === $l1_cat['name']);
+
+                    // Get level 2 categories for this parent from pre-fetched data
+                    $child_details = isset($children_by_parent[$l1_cat['id']]) ? $children_by_parent[$l1_cat['id']] : [];
+                ?>
+                <div style="position: relative; display: inline-flex; align-items: stretch;">
+                    <a href="?<?php echo htmlspecialchars($slug); ?>=1&date=1day"
+                       class="btn category-main-btn"
+                       style="<?php echo $is_active ? 'background: #2563eb; color: white;' : 'background: #f8f9fa; color: #334155; border: 2px solid #2563eb;'; ?> padding: 12px 16px 12px 20px; text-decoration: none; border-radius: 6px 0 0 6px; font-weight: 600; display: inline-flex; align-items: center; border-right: none; vertical-align: middle;">
+                        <?php echo $icon; ?> <?php echo htmlspecialchars($l1_cat['name']); ?>
+                    </a>
+                    <button onclick="toggleCategoryDropdown('<?php echo htmlspecialchars($slug); ?>')"
+                            class="btn category-arrow-btn"
+                            style="<?php echo $is_active ? 'background: #2563eb; color: white;' : 'background: #f8f9fa; color: #334155; border: 2px solid #2563eb;'; ?> padding: 12px 8px; border-radius: 0 6px 6px 0; font-weight: 600; cursor: pointer; border-left: none; display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; min-width: 32px;">
+                        ▼
+                    </button>
+                    <?php if (!empty($child_details)): ?>
+                    <div id="dropdown-<?php echo htmlspecialchars($slug); ?>" class="category-dropdown" style="display: none; position: absolute; top: 100%; left: 0; margin-top: 5px; background: white; border: 2px solid #2563eb; border-radius: 6px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); min-width: 200px; z-index: 1000;">
+                        <?php foreach ($child_details as $child): ?>
+                        <a href="?category[]=<?php echo $child['id']; ?>&date=1day"
+                           style="display: block; padding: 10px 15px; color: #334155; text-decoration: none; border-bottom: 1px solid #e0e0e0; transition: background 0.2s;"
+                           onmouseover="this.style.background='#f1f5f9'"
+                           onmouseout="this.style.background='white'">
+                            <?php echo htmlspecialchars($child['name']); ?>
+                        </a>
+                        <?php endforeach; ?>
+                    </div>
+                    <?php endif; ?>
+                </div>
+                <?php endforeach; ?>
 
                 <!-- Search Form (aligned right on same line) -->
                 <form class="search-form" method="GET" style="display: flex; gap: 8px; align-items: center; margin: 0; margin-left: auto;">
@@ -2524,14 +2721,10 @@ if ($last_scrape_time !== 'Never') {
                     <?php if ($date_filter && $date_filter !== 'all'): ?>
                         <input type="hidden" name="date" value="<?php echo $date_filter; ?>">
                     <?php endif; ?>
-                    <?php if ($tech_filter): ?>
-                        <input type="hidden" name="tech" value="1">
-                    <?php endif; ?>
-                    <?php if ($business_filter): ?>
-                        <input type="hidden" name="business" value="1">
-                    <?php endif; ?>
-                    <?php if ($sports_filter): ?>
-                        <input type="hidden" name="sports" value="1">
+                    <?php if ($active_parent_filter):
+                        $active_slug = isset($category_slug_map[$active_parent_filter]) ? $category_slug_map[$active_parent_filter] : strtolower($active_parent_filter);
+                    ?>
+                        <input type="hidden" name="<?php echo htmlspecialchars($active_slug); ?>" value="1">
                     <?php endif; ?>
                 </form>
             </div>
@@ -2548,11 +2741,25 @@ if ($last_scrape_time !== 'Never') {
                             </button>
                         </div>
 
-                        <!-- Current Sources Button -->
-                        <button onclick="showSourcesModal()"
-                                style="padding: 12px 20px; background: #64748b; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px; white-space: nowrap;">
-                            📰 Current Sources
-                        </button>
+                        <!-- Selected Categories Display -->
+                        <?php if (!empty($category_filter)): ?>
+                            <?php
+                            // Get only level 2 categories from the filter
+                            $cat_ids_str = implode(',', array_map('intval', $category_filter));
+                            $level2_cats = [];
+                            if (!empty($cat_ids_str)) {
+                                $cat_result = $conn->query("SELECT name FROM categories WHERE id IN ($cat_ids_str) AND level = 2 ORDER BY name");
+                                while ($cat = $cat_result->fetch_assoc()) {
+                                    $level2_cats[] = htmlspecialchars($cat['name']);
+                                }
+                            }
+                            if (!empty($level2_cats)):
+                            ?>
+                            <div style="padding: 10px 16px; background: #f1f5f9; border: 2px solid #cbd5e1; border-radius: 6px; font-size: 13px; color: #334155; max-width: 600px;">
+                                <strong>🏷️ Categories:</strong> <?php echo implode(', ', $level2_cats); ?>
+                            </div>
+                            <?php endif; ?>
+                        <?php endif; ?>
 
                         <?php if (!empty($source_filter) || !empty($category_filter)): ?>
                         <div style="position: relative; display: inline-block;">
@@ -2609,7 +2816,7 @@ if ($last_scrape_time !== 'Never') {
                             <?php
                             if (count($category_filter) > 0) {
                                 $placeholders = implode(',', array_fill(0, count($category_filter), '?'));
-                                $cat_display_stmt = $conn->prepare("SELECT id, name FROM categories WHERE id IN ($placeholders)");
+                                $cat_display_stmt = $conn->prepare("SELECT id, name, parentID, level FROM categories WHERE id IN ($placeholders)");
                                 if ($cat_display_stmt) {
                                     $cat_display_stmt->bind_param(str_repeat('i', count($category_filter)), ...$category_filter);
                                     $cat_display_stmt->execute();
@@ -2620,9 +2827,23 @@ if ($last_scrape_time !== 'Never') {
                                         $remove_url = '?';
                                         $url_params = [];
 
-                                        // Keep other category filters
-                                        foreach ($remaining_cats as $remaining_cat) {
-                                            $url_params[] = 'category[]=' . urlencode($remaining_cat);
+                                        // If removing a level 2 category and no other categories remain, redirect to parent level 1
+                                        if (empty($remaining_cats) && $cat['level'] == 2 && $cat['parentID']) {
+                                            // Get parent category name and slug
+                                            $parent_stmt = $conn->prepare("SELECT name FROM categories WHERE id = ?");
+                                            $parent_stmt->bind_param('i', $cat['parentID']);
+                                            $parent_stmt->execute();
+                                            $parent_result = $parent_stmt->get_result();
+                                            if ($parent_row = $parent_result->fetch_assoc()) {
+                                                $parent_slug = isset($category_slug_map[$parent_row['name']]) ? $category_slug_map[$parent_row['name']] : strtolower($parent_row['name']);
+                                                $url_params[] = $parent_slug . '=1';
+                                            }
+                                            $parent_stmt->close();
+                                        } else {
+                                            // Keep other category filters
+                                            foreach ($remaining_cats as $remaining_cat) {
+                                                $url_params[] = 'category[]=' . urlencode($remaining_cat);
+                                            }
                                         }
 
                                         // Keep source filters
@@ -2777,7 +2998,7 @@ if ($last_scrape_time !== 'Never') {
                             <?php endwhile; ?>
                         </div>
 
-                        <!-- Categories Checkboxes -->
+                        <!-- Categories Checkboxes (Hierarchical) -->
                         <div>
                             <h3 style="margin-bottom: 10px; font-size: 14px; font-weight: 600; color: #2563eb;">CATEGORIES</h3>
                             <div style="margin-bottom: 10px; display: flex; gap: 5px;">
@@ -2790,22 +3011,42 @@ if ($last_scrape_time !== 'Never') {
                             </div>
                             <div>
                             <?php
+                            // Build article count lookup from categories_result
+                            $cat_counts = [];
                             $categories_result->data_seek(0);
-                            while ($cat = $categories_result->fetch_assoc()):
-                                // Skip if user has preferences and this category is not in them
-                                if (!empty($preferred_categories) && !in_array($cat['id'], $preferred_categories)) {
-                                    continue;
-                                }
+                            while ($cat = $categories_result->fetch_assoc()) {
+                                $cat_counts[(int)$cat['id']] = $cat['article_count'];
+                            }
+
+                            foreach ($level1_categories as $parent):
+                                $parent_id = $parent['id'];
+                                $children = isset($categories_grouped[$parent_id]) ? $categories_grouped[$parent_id] : [];
+                                if (empty($children)) continue;
+
+                                $icon = isset($category_icon_map[$parent['name']]) ? $category_icon_map[$parent['name']] : '📂';
                             ?>
-                                <label style="display: block; margin-bottom: 8px; cursor: pointer; white-space: nowrap;">
-                                    <input type="checkbox" class="category-filter" value="<?php echo $cat['id']; ?>"
-                                           <?php echo (empty($category_filter) || in_array($cat['id'], $category_filter)) ? 'checked' : ''; ?>
-                                           style="margin-right: 8px;">
-                                    <?php echo htmlspecialchars($cat['name']); ?> <span style="color: #999;">(<?php echo $cat['article_count']; ?>)</span>
-                                    <a href="javascript:void(0)" onclick="selectOnlyCategory(<?php echo $cat['id']; ?>); event.stopPropagation();"
-                                       style="margin-left: 5px; font-size: 11px; color: #2563eb; text-decoration: none; font-weight: 600;">only</a>
-                                </label>
-                            <?php endwhile; ?>
+                                <div style="margin-bottom: 12px;">
+                                    <div style="font-weight: 700; font-size: 13px; color: #334155; margin-bottom: 6px; border-bottom: 1px solid #e0e0e0; padding-bottom: 4px;">
+                                        <?php echo $icon; ?> <?php echo htmlspecialchars($parent['name']); ?>
+                                    </div>
+                                    <?php foreach ($children as $child):
+                                        // Skip if user has preferences and this category is not in them
+                                        if (!empty($preferred_categories) && !in_array($child['id'], $preferred_categories)) {
+                                            continue;
+                                        }
+                                        $count = isset($cat_counts[$child['id']]) ? $cat_counts[$child['id']] : 0;
+                                    ?>
+                                    <label style="display: block; margin-bottom: 6px; cursor: pointer; white-space: nowrap; padding-left: 12px;">
+                                        <input type="checkbox" class="category-filter" value="<?php echo $child['id']; ?>"
+                                               <?php echo (empty($category_filter) || in_array($child['id'], $category_filter)) ? 'checked' : ''; ?>
+                                               style="margin-right: 8px;">
+                                        <?php echo htmlspecialchars($child['name']); ?> <span style="color: #999;">(<?php echo $count; ?>)</span>
+                                        <a href="javascript:void(0)" onclick="selectOnlyCategory(<?php echo $child['id']; ?>); event.stopPropagation();"
+                                           style="margin-left: 5px; font-size: 11px; color: #2563eb; text-decoration: none; font-weight: 600;">only</a>
+                                    </label>
+                                    <?php endforeach; ?>
+                                </div>
+                            <?php endforeach; ?>
                             </div>
                         </div>
 
@@ -2860,6 +3101,10 @@ if ($last_scrape_time !== 'Never') {
         if ($search) $query_params['search'] = $search;
         if ($date_filter && $date_filter !== 'all') $query_params['date'] = $date_filter;
         if ($page_size != 50) $query_params['size'] = $page_size;
+        if ($tech_filter) $query_params['tech'] = '1';
+        if ($business_filter) $query_params['business'] = '1';
+        if ($sports_filter) $query_params['sports'] = '1';
+        if ($general_filter) $query_params['general'] = '1';
 
         if (!function_exists('buildPageUrl')) {
             function buildPageUrl($page_num, $params) {
@@ -3223,28 +3468,6 @@ if ($last_scrape_time !== 'Never') {
                     </div>
                 </div>
 
-                <div style="margin-bottom: 30px;">
-                    <h3 style="margin: 0 0 15px 0; color: #333;">Default View</h3>
-                    <div style="padding: 15px; background: #f8f9fa; border-radius: 5px;">
-                        <label style="display: block; margin-bottom: 10px; cursor: pointer;">
-                            <input type="radio" name="defaultView" value="all" class="pref-default-view" style="margin-right: 8px; cursor: pointer;">
-                            <span>All Articles (no filter applied)</span>
-                        </label>
-                        <label style="display: block; margin-bottom: 10px; cursor: pointer;">
-                            <input type="radio" name="defaultView" value="tech" class="pref-default-view" style="margin-right: 8px; cursor: pointer;">
-                            <span>Technology</span>
-                        </label>
-                        <label style="display: block; margin-bottom: 10px; cursor: pointer;">
-                            <input type="radio" name="defaultView" value="business" class="pref-default-view" style="margin-right: 8px; cursor: pointer;">
-                            <span>Business</span>
-                        </label>
-                        <label style="display: block; cursor: pointer;">
-                            <input type="radio" name="defaultView" value="sports" class="pref-default-view" style="margin-right: 8px; cursor: pointer;">
-                            <span>Sports</span>
-                        </label>
-                    </div>
-                </div>
-
                 <div style="border-top: 1px solid #e0e0e0; padding-top: 20px; margin-top: 20px;">
                     <p style="color: #666; font-size: 14px; margin-bottom: 0;">
                         <strong>Note:</strong> Selected sources and categories will always be applied as base filters. The default view determines what you see when first loading the page.
@@ -3286,18 +3509,12 @@ if ($last_scrape_time !== 'Never') {
                     <div style="margin-bottom: 20px;">
                         <label style="display: block; margin-bottom: 5px; font-weight: 600; color: #333;">Category <span style="color: #dc3545;">*</span></label>
                         <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                            <?php $first_cat = true; foreach ($level1_categories as $l1_cat): ?>
                             <label style="cursor: pointer; padding: 8px 16px; background: #e0e0e0; border: 2px solid #ccc; border-radius: 5px; font-weight: 600; transition: all 0.3s;">
-                                <input type="radio" name="newSourceCategory" value="Business" checked style="display: none;">
-                                Business
+                                <input type="radio" name="newSourceCategory" value="<?php echo htmlspecialchars($l1_cat['name']); ?>"<?php echo $first_cat ? ' checked' : ''; ?> style="display: none;">
+                                <?php echo htmlspecialchars($l1_cat['name']); ?>
                             </label>
-                            <label style="cursor: pointer; padding: 8px 16px; background: #e0e0e0; border: 2px solid #ccc; border-radius: 5px; font-weight: 600; transition: all 0.3s;">
-                                <input type="radio" name="newSourceCategory" value="Technology" style="display: none;">
-                                Technology
-                            </label>
-                            <label style="cursor: pointer; padding: 8px 16px; background: #e0e0e0; border: 2px solid #ccc; border-radius: 5px; font-weight: 600; transition: all 0.3s;">
-                                <input type="radio" name="newSourceCategory" value="Sports" style="display: none;">
-                                Sports
-                            </label>
+                            <?php $first_cat = false; endforeach; ?>
                         </div>
                     </div>
 
@@ -3309,6 +3526,514 @@ if ($last_scrape_time !== 'Never') {
             </div>
         </div>
     </div>
+
+    <!-- Category Management Modal -->
+    <div id="categoryManagementModal" class="modal">
+        <div class="modal-content" style="max-width: 900px;">
+            <div class="modal-header">
+                <h2>🏷️ Category Management</h2>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <button onclick="showAddCategoryForm()" class="btn btn-success" style="padding: 8px 16px; font-size: 14px;">+ Add Category</button>
+                    <span class="close" onclick="closeCategoryManagementModal()">&times;</span>
+                </div>
+            </div>
+            <div class="modal-body" style="padding: 30px;">
+                <div id="categoryError" style="display: none; padding: 12px; margin-bottom: 20px; border-radius: 5px; background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb;"></div>
+                <div id="categorySuccess" style="display: none; padding: 12px; margin-bottom: 20px; border-radius: 5px; background: #d4edda; color: #155724; border: 1px solid #c3e6cb;"></div>
+
+                <!-- Recategorization Progress (Hidden by default) -->
+                <div id="recatProgressContainer" style="display: none; margin-bottom: 20px; padding: 16px; border-radius: 8px; background: #e8f4fd; border: 2px solid #b8daff;">
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                        <div id="recatSpinner" class="spinner-border spinner-border-sm" style="width: 20px; height: 20px; border: 3px solid #007bff; border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; display: inline-block;"></div>
+                        <strong id="recatTitle" style="color: #004085;">Recategorizing...</strong>
+                    </div>
+                    <div id="recatLog" style="max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 13px; color: #333; background: #fff; padding: 10px; border-radius: 4px; border: 1px solid #dee2e6; white-space: pre-wrap;"></div>
+                </div>
+                <style>
+                    @keyframes spin { to { transform: rotate(360deg); } }
+                </style>
+
+                <!-- Add/Edit Category Form (Hidden by default) -->
+                <div id="categoryFormContainer" style="display: none; margin-bottom: 30px; padding: 20px; background: #f8f9fa; border-radius: 8px; border: 2px solid #dee2e6;">
+                    <h3 id="categoryFormTitle">Add New Category</h3>
+                    <form id="categoryForm" onsubmit="submitCategory(event)">
+                        <input type="hidden" id="categoryId">
+
+                        <div style="margin-bottom: 20px;">
+                            <label style="display: block; margin-bottom: 5px; font-weight: 600; color: #333;">Category Name <span style="color: #dc3545;">*</span></label>
+                            <input type="text" id="categoryName" required maxlength="100" placeholder="e.g., Real Estate"
+                                   style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 5px; font-size: 14px;">
+                        </div>
+
+                        <div style="margin-bottom: 20px;">
+                            <label style="display: block; margin-bottom: 5px; font-weight: 600; color: #333;">Description</label>
+                            <textarea id="categoryDescription" maxlength="500" placeholder="Brief description of this category"
+                                      style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 5px; font-size: 14px; min-height: 80px; resize: vertical;"></textarea>
+                        </div>
+
+                        <input type="hidden" id="categoryLevel" value="2">
+
+                        <div style="margin-bottom: 20px;">
+                            <label style="display: block; margin-bottom: 10px; font-weight: 600; color: #333;">Parent Category <span style="color: #dc3545;">*</span></label>
+                            <div id="categoryParentButtons" style="display: flex; gap: 10px; flex-wrap: wrap;">
+                                <!-- Parent category radio buttons will be populated here -->
+                            </div>
+                        </div>
+
+                        <div style="display: flex; gap: 10px; justify-content: flex-end; padding-top: 15px; border-top: 1px solid #dee2e6;">
+                            <button type="button" onclick="cancelCategoryForm()" class="btn btn-secondary" style="padding: 10px 24px;">Cancel</button>
+                            <button type="submit" id="categorySubmitBtn" class="btn btn-success" style="padding: 10px 24px;">Save Category</button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- Categories List -->
+                <div id="categoriesListContainer">
+                    <div style="margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
+                        <h3 style="margin: 0;">All Categories</h3>
+                        <span id="categoryCount" style="color: #666; font-size: 14px;"></span>
+                    </div>
+                    <div id="categoriesList" style="max-height: 600px; overflow-y: auto;">
+                        <!-- Categories will be loaded here -->
+                    </div>
+                </div>
+
+                <!-- Close Button at Bottom -->
+                <div style="margin-top: 30px; padding-top: 20px; border-top: 2px solid #e0e0e0; text-align: center;">
+                    <button onclick="closeCategoryManagementModal()" class="btn btn-secondary" style="padding: 12px 30px; font-size: 16px;">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    // Category Management Functions
+    let categoriesData = [];
+
+    async function showCategoryManagementModal() {
+        document.getElementById('categoryManagementModal').style.display = 'flex';
+        await loadCategories();
+    }
+
+    function closeCategoryManagementModal() {
+        document.getElementById('categoryManagementModal').style.display = 'none';
+        cancelCategoryForm();
+    }
+
+    async function loadCategories() {
+        try {
+            const response = await fetch('api_category_get.php');
+            const data = await response.json();
+
+            if (data.success) {
+                categoriesData = data.categories;
+                renderCategories(data.categories);
+
+                // Populate parent category radio buttons
+                const parentButtonsContainer = document.getElementById('categoryParentButtons');
+                const level1Cats = data.categories.filter(cat => cat.level == 1);
+
+                parentButtonsContainer.innerHTML = '';
+                level1Cats.forEach((cat, index) => {
+                    const isGeneral = cat.name === 'General';
+                    const label = document.createElement('label');
+                    label.className = 'category-parent-btn';
+                    label.style.cssText = 'cursor: pointer; padding: 10px 20px; background: #e0e0e0; border: 2px solid #ccc; border-radius: 5px; font-weight: 600; transition: all 0.3s; display: inline-block;';
+
+                    const radio = document.createElement('input');
+                    radio.type = 'radio';
+                    radio.name = 'categoryParent';
+                    radio.value = cat.id;
+                    radio.required = true;
+                    radio.style.display = 'none';
+                    if (isGeneral) radio.checked = true; // Default to General
+
+                    radio.addEventListener('change', updateParentCategoryStyles);
+
+                    label.appendChild(radio);
+                    label.appendChild(document.createTextNode(cat.name));
+                    parentButtonsContainer.appendChild(label);
+                });
+
+                updateParentCategoryStyles();
+            } else {
+                showCategoryError('Failed to load categories: ' + (data.error || 'Unknown error'));
+            }
+        } catch (error) {
+            showCategoryError('Error loading categories: ' + error.message);
+        }
+    }
+
+    function updateParentCategoryStyles() {
+        document.querySelectorAll('.category-parent-btn').forEach(label => {
+            const radio = label.querySelector('input[type="radio"]');
+            if (radio.checked) {
+                label.style.background = '#667eea';
+                label.style.borderColor = '#667eea';
+                label.style.color = '#fff';
+            } else {
+                label.style.background = '#e0e0e0';
+                label.style.borderColor = '#ccc';
+                label.style.color = '#333';
+            }
+        });
+    }
+
+    function renderCategories(categories) {
+        const container = document.getElementById('categoriesList');
+        const level1Cats = categories.filter(c => c.level == 1);
+
+        let html = '';
+        let totalCount = 0;
+
+        level1Cats.forEach(parent => {
+            const children = categories.filter(c => c.parentID == parent.id);
+            totalCount++;
+
+            html += `
+                <div style="margin-bottom: 25px; border: 2px solid #dee2e6; border-radius: 8px; overflow: hidden;">
+                    <div style="background: #f8f9fa; padding: 15px; border-bottom: 2px solid #dee2e6; display: flex; justify-content: space-between; align-items: center; cursor: pointer; flex-wrap: wrap; gap: 10px;" onclick="toggleCategoryGroup(${parent.id})">
+                        <div style="flex: 1; min-width: 150px;">
+                            <span id="arrow-${parent.id}" style="display: inline-block; transition: transform 0.3s; margin-right: 8px;">▶</span>
+                            <strong style="font-size: 16px; color: #333;">📁 ${parent.name}</strong>
+                            <span style="margin-left: 10px; color: #666; font-size: 13px;">(Level 1 - ${children.length} subcategories)</span>
+                            ${parent.description ? `<div style="margin-top: 5px; margin-left: 28px; color: #666; font-size: 13px;">${parent.description}</div>` : ''}
+                        </div>
+                        <div style="display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap;" onclick="event.stopPropagation();">
+                            <button id="recatBtn-${parent.id}" onclick="recategorize(${parent.id}, '${parent.name.replace(/'/g, "\\'")}')" class="btn btn-sm" style="padding: 8px 16px; font-size: 14px; font-weight: 600; background: #ff6b00; color: #fff; border: 2px solid #ff6b00; white-space: nowrap; box-shadow: 0 2px 4px rgba(0,0,0,0.2);" title="Re-run AI categorization on recent articles in this category">🔄 Recategorize</button>
+                            <button onclick="showAddSubcategoryForm(${parent.id}, '${parent.name.replace(/'/g, "\\'")}')" class="btn btn-sm btn-success" style="padding: 6px 12px; font-size: 13px; white-space: nowrap;">+ Category</button>
+                            <button onclick="editCategory(${parent.id})" class="btn btn-sm" style="padding: 6px 12px; font-size: 13px; white-space: nowrap;">✏️ Edit</button>
+                            <button onclick="deleteCategory(${parent.id})" class="btn btn-sm btn-danger" style="padding: 6px 12px; font-size: 13px; white-space: nowrap;">🗑️ Delete</button>
+                        </div>
+                    </div>
+                    <div id="children-${parent.id}" style="padding: 10px; display: none;">
+            `;
+
+            if (children.length > 0) {
+                children.forEach(child => {
+                    totalCount++;
+                    html += `
+                        <div style="padding: 12px 15px; margin: 5px 0; background: #fff; border: 1px solid #e0e0e0; border-radius: 5px; display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <strong style="color: #333;">└─ ${child.name}</strong>
+                                <span style="margin-left: 10px; color: #999; font-size: 12px;">(Level 2)</span>
+                                ${child.description ? `<div style="margin-top: 5px; color: #666; font-size: 12px;">${child.description}</div>` : ''}
+                            </div>
+                            <div style="display: flex; gap: 8px;">
+                                <button onclick="editCategory(${child.id})" class="btn btn-sm" style="padding: 5px 10px; font-size: 12px;">✏️ Edit</button>
+                                <button onclick="deleteCategory(${child.id})" class="btn btn-sm btn-danger" style="padding: 5px 10px; font-size: 12px;">🗑️ Delete</button>
+                            </div>
+                        </div>
+                    `;
+                });
+            } else {
+                html += '<div style="padding: 15px; text-align: center; color: #999; font-style: italic;">No subcategories</div>';
+            }
+
+            html += `
+                    </div>
+                </div>
+            `;
+        });
+
+        container.innerHTML = html;
+        document.getElementById('categoryCount').textContent = `${totalCount} total categories`;
+    }
+
+    function toggleCategoryGroup(parentId) {
+        const childrenDiv = document.getElementById(`children-${parentId}`);
+        const arrow = document.getElementById(`arrow-${parentId}`);
+
+        if (childrenDiv.style.display === 'none') {
+            childrenDiv.style.display = 'block';
+            arrow.style.transform = 'rotate(90deg)';
+        } else {
+            childrenDiv.style.display = 'none';
+            arrow.style.transform = 'rotate(0deg)';
+        }
+    }
+
+    function showAddCategoryForm() {
+        document.getElementById('categoryFormTitle').textContent = 'Add New Category';
+        document.getElementById('categoryId').value = '';
+        document.getElementById('categoryName').value = '';
+        document.getElementById('categoryDescription').value = '';
+        document.getElementById('categoryLevel').value = '2';
+        document.getElementById('categorySubmitBtn').textContent = 'Save Category';
+        document.getElementById('categoryFormContainer').style.display = 'block';
+        document.getElementById('categoriesListContainer').style.display = 'none';
+
+        // Default to General
+        const generalRadio = Array.from(document.querySelectorAll('input[name="categoryParent"]'))
+            .find(r => {
+                const cat = categoriesData.find(c => c.id == r.value);
+                return cat && cat.name === 'General';
+            });
+        if (generalRadio) generalRadio.checked = true;
+        updateParentCategoryStyles();
+    }
+
+    function showAddSubcategoryForm(parentId, parentName) {
+        document.getElementById('categoryFormTitle').textContent = `Add Subcategory to ${parentName}`;
+        document.getElementById('categoryId').value = '';
+        document.getElementById('categoryName').value = '';
+        document.getElementById('categoryDescription').value = '';
+        document.getElementById('categoryLevel').value = '2';
+        document.getElementById('categorySubmitBtn').textContent = 'Save Category';
+        document.getElementById('categoryFormContainer').style.display = 'block';
+        document.getElementById('categoriesListContainer').style.display = 'none';
+
+        // Set the specific parent
+        const parentRadio = document.querySelector(`input[name="categoryParent"][value="${parentId}"]`);
+        if (parentRadio) parentRadio.checked = true;
+        updateParentCategoryStyles();
+
+        // Focus on the name input for quick entry
+        setTimeout(() => document.getElementById('categoryName').focus(), 100);
+    }
+
+    function editCategory(id) {
+        const category = categoriesData.find(c => c.id == id);
+        if (!category) return;
+
+        // If editing a level 1 category, just show an alert for now
+        if (category.level == 1) {
+            alert('Editing parent categories is restricted. Please contact your administrator.');
+            return;
+        }
+
+        document.getElementById('categoryFormTitle').textContent = 'Edit Category';
+        document.getElementById('categoryId').value = category.id;
+        document.getElementById('categoryName').value = category.name;
+        document.getElementById('categoryDescription').value = category.description || '';
+        document.getElementById('categoryLevel').value = category.level;
+        document.getElementById('categorySubmitBtn').textContent = 'Update Category';
+        document.getElementById('categoryFormContainer').style.display = 'block';
+        document.getElementById('categoriesListContainer').style.display = 'none';
+
+        // Set the parent radio button
+        if (category.parentID) {
+            const parentRadio = document.querySelector(`input[name="categoryParent"][value="${category.parentID}"]`);
+            if (parentRadio) parentRadio.checked = true;
+        }
+        updateParentCategoryStyles();
+    }
+
+    function cancelCategoryForm() {
+        document.getElementById('categoryFormContainer').style.display = 'none';
+        document.getElementById('categoriesListContainer').style.display = 'block';
+        document.getElementById('categoryForm').reset();
+    }
+
+    async function submitCategory(event) {
+        event.preventDefault();
+
+        const id = document.getElementById('categoryId').value;
+        const name = document.getElementById('categoryName').value.trim();
+        const description = document.getElementById('categoryDescription').value.trim();
+        const level = document.getElementById('categoryLevel').value;
+        const parentRadio = document.querySelector('input[name="categoryParent"]:checked');
+        const parentID = parentRadio ? parentRadio.value : null;
+
+        const formData = new FormData();
+        formData.append('action', id ? 'update' : 'create');
+        if (id) formData.append('id', id);
+        formData.append('name', name);
+        formData.append('description', description);
+        formData.append('level', level);
+        if (level == '2' && parentID) formData.append('parentID', parentID);
+
+        try {
+            const response = await fetch('api_category_manage.php', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await response.json();
+
+            if (data.success) {
+                showCategorySuccess(data.message || (id ? 'Category updated successfully!' : 'Category added successfully!'));
+                cancelCategoryForm();
+                await loadCategories();
+            } else {
+                showCategoryError(data.error || 'Failed to save category');
+            }
+        } catch (error) {
+            showCategoryError('Error saving category: ' + error.message);
+        }
+    }
+
+    async function deleteCategory(id) {
+        const category = categoriesData.find(c => c.id == id);
+        if (!category) return;
+
+        // Check if it has children
+        const children = categoriesData.filter(c => c.parentID == id);
+        if (children.length > 0) {
+            if (!confirm(`"${category.name}" has ${children.length} subcategories. Deleting it will also delete all subcategories. Continue?`)) {
+                return;
+            }
+        } else {
+            if (!confirm(`Are you sure you want to delete "${category.name}"?`)) {
+                return;
+            }
+        }
+
+        const formData = new FormData();
+        formData.append('action', 'delete');
+        formData.append('id', id);
+
+        try {
+            const response = await fetch('api_category_manage.php', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await response.json();
+
+            if (data.success) {
+                showCategorySuccess(data.message || 'Category deleted successfully!');
+                await loadCategories();
+            } else {
+                showCategoryError(data.error || 'Failed to delete category');
+            }
+        } catch (error) {
+            showCategoryError('Error deleting category: ' + error.message);
+        }
+    }
+
+    function showCategoryError(message) {
+        const errorDiv = document.getElementById('categoryError');
+        errorDiv.textContent = message;
+        errorDiv.style.display = 'block';
+        document.getElementById('categorySuccess').style.display = 'none';
+        setTimeout(() => { errorDiv.style.display = 'none'; }, 5000);
+    }
+
+    function showCategorySuccess(message) {
+        const successDiv = document.getElementById('categorySuccess');
+        successDiv.textContent = message;
+        successDiv.style.display = 'block';
+        document.getElementById('categoryError').style.display = 'none';
+        setTimeout(() => { successDiv.style.display = 'none'; }, 3000);
+    }
+
+    // Recategorization
+    let recatInProgress = false;
+
+    function recategorize(categoryId, categoryName) {
+        if (recatInProgress) {
+            showCategoryError('A recategorization is already in progress. Please wait for it to finish.');
+            return;
+        }
+
+        if (!confirm(`Recategorize all recent articles under "${categoryName}"?\n\nThis will re-run AI categorization on articles from the last 24 hours in this category tree.`)) {
+            return;
+        }
+
+        recatInProgress = true;
+
+        // Disable all recategorize buttons
+        document.querySelectorAll('[id^="recatBtn-"]').forEach(btn => {
+            btn.disabled = true;
+            btn.style.opacity = '0.6';
+            btn.style.cursor = 'not-allowed';
+        });
+
+        // Show progress container
+        const progressContainer = document.getElementById('recatProgressContainer');
+        const recatLog = document.getElementById('recatLog');
+        const recatTitle = document.getElementById('recatTitle');
+        const recatSpinner = document.getElementById('recatSpinner');
+
+        progressContainer.style.display = 'block';
+        progressContainer.style.background = '#e8f4fd';
+        progressContainer.style.borderColor = '#b8daff';
+        recatTitle.textContent = `Recategorizing "${categoryName}"...`;
+        recatTitle.style.color = '#004085';
+        recatSpinner.style.display = 'inline-block';
+        recatLog.textContent = '';
+
+        const eventSource = new EventSource(`api_recategorize.php?category_id=${categoryId}`);
+
+        eventSource.onmessage = function(event) {
+            try {
+                const data = JSON.parse(event.data);
+
+                switch (data.type) {
+                    case 'start':
+                        recatLog.textContent += data.message + '\n';
+                        break;
+
+                    case 'progress':
+                        recatLog.textContent += data.message + '\n';
+                        // Auto-scroll to bottom
+                        recatLog.scrollTop = recatLog.scrollHeight;
+                        break;
+
+                    case 'complete':
+                        recatLog.textContent += '\n' + data.message + '\n';
+                        recatLog.scrollTop = recatLog.scrollHeight;
+                        recatSpinner.style.display = 'none';
+                        recatTitle.textContent = 'Recategorization Complete';
+                        progressContainer.style.background = '#d4edda';
+                        progressContainer.style.borderColor = '#c3e6cb';
+                        recatTitle.style.color = '#155724';
+                        finishRecategorization();
+                        eventSource.close();
+                        break;
+
+                    case 'error':
+                        recatLog.textContent += '\nERROR: ' + data.message + '\n';
+                        recatLog.scrollTop = recatLog.scrollHeight;
+                        recatSpinner.style.display = 'none';
+                        recatTitle.textContent = 'Recategorization Failed';
+                        progressContainer.style.background = '#f8d7da';
+                        progressContainer.style.borderColor = '#f5c6cb';
+                        recatTitle.style.color = '#721c24';
+                        finishRecategorization();
+                        eventSource.close();
+                        break;
+                }
+            } catch (e) {
+                recatLog.textContent += event.data + '\n';
+                recatLog.scrollTop = recatLog.scrollHeight;
+            }
+        };
+
+        eventSource.onerror = function() {
+            // EventSource will fire onerror when the stream ends normally
+            // Only treat as error if still in progress
+            if (recatInProgress) {
+                recatSpinner.style.display = 'none';
+                recatTitle.textContent = 'Connection Lost';
+                progressContainer.style.background = '#f8d7da';
+                progressContainer.style.borderColor = '#f5c6cb';
+                recatTitle.style.color = '#721c24';
+                recatLog.textContent += '\nConnection to server lost.\n';
+                finishRecategorization();
+            }
+            eventSource.close();
+        };
+    }
+
+    function finishRecategorization() {
+        recatInProgress = false;
+
+        // Re-enable all recategorize buttons
+        document.querySelectorAll('[id^="recatBtn-"]').forEach(btn => {
+            btn.disabled = false;
+            btn.style.opacity = '1';
+            btn.style.cursor = 'pointer';
+        });
+
+        // Auto-hide progress after 30 seconds
+        setTimeout(() => {
+            const container = document.getElementById('recatProgressContainer');
+            if (container) container.style.display = 'none';
+        }, 30000);
+    }
+    </script>
 </body>
 </html>
 <?php

@@ -99,13 +99,14 @@ class ParallelSummarizer:
             return False
 
     def load_categories(self):
-        """Load categories into cache"""
+        """Load categories into cache (level 1 = parent, level 2 = child)"""
         cursor = self.connection.cursor(dictionary=True)
-        cursor.execute("SELECT id, name, description FROM categories")
+        cursor.execute("SELECT id, name, description, level, parentID FROM categories")
         for row in cursor.fetchall():
             self.categories_cache[row['name']] = row
         cursor.close()
-        print(f"✓ Loaded {len(self.categories_cache)} categories")
+        level2_count = sum(1 for c in self.categories_cache.values() if c.get('level') == 2)
+        print(f"✓ Loaded {len(self.categories_cache)} categories ({level2_count} assignable)")
 
     def get_unsummarized_articles(self, limit=10):
         """Get articles that need summaries, including failed articles eligible for retry with exponential backoff"""
@@ -115,7 +116,7 @@ class ParallelSummarizer:
             FROM articles a
             LEFT JOIN sources s ON a.source_id = s.id
             WHERE (a.summary IS NULL OR a.summary = '')
-            AND (s.enabled = 1 OR s.id IS NULL)
+            AND (s.isActive = 'Y' OR s.id IS NULL)
             AND (
                 -- Never attempted or not marked as failed
                 (a.isSummaryFailed IS NULL OR a.isSummaryFailed != 'Y')
@@ -609,43 +610,181 @@ Write a summary (200-300 words):"""
 
         return None
 
-    def categorize_with_ai(self, title, summary, main_category=None):
-        """Categorize using AI providers in configured order"""
-        if not summary:
-            return ['Global Business']
+    def _categorize_sports(self, title, summary):
+        """Categorize sports-source articles with a sports-focused prompt"""
+        text = f"{title} {summary}".lower()
 
-        # For sports sources, ALWAYS return Sports only
-        if main_category == 'Sports':
-            return ['Sports']
-
-        # Build category descriptions for better AI understanding
-        categories_with_desc = []
+        # Build only sports categories for the prompt
+        sports_cats = []
+        business_cats = []
         for name, data in self.categories_cache.items():
-            desc = data.get('description', '')
-            if desc:
-                categories_with_desc.append(f"{name} ({desc})")
-            else:
-                categories_with_desc.append(name)
+            if data.get('level') != 2:
+                continue
+            parent_id = data.get('parentID')
+            for pname, pdata in self.categories_cache.items():
+                if pdata.get('id') == parent_id and pdata.get('level') == 1:
+                    if pname == 'Sports':
+                        desc = data.get('description', '')
+                        sports_cats.append(f"{name}: {desc}" if desc else name)
+                    elif pname == 'Business':
+                        desc = data.get('description', '')
+                        business_cats.append(f"{name}: {desc}" if desc else name)
+                    break
 
-        # For all other sources, use AI categorization
-        if True:
-            prompt = f"""Categorize this business news article into the most relevant categories.
+        prompt = f"""You are a sports news classifier. Assign 1-2 categories to this sports article.
 
-CATEGORY DEFINITIONS:
-{chr(10).join('- ' + cat for cat in sorted(categories_with_desc))}
+SPORTS CATEGORIES (use EXACT names before the colon):
+{chr(10).join('  - ' + c for c in sorted(sports_cats))}
 
-IMPORTANT RULES:
-- Sports = Athletic competitions, professional sports leagues, athletes, sporting events (NOT technology)
-- Technology = Only for general tech companies/innovation when NO specific tech category applies
-- Use specific tech categories (AI/ML, Cloud, Cybersecurity, Hardware, Software, Robotics) instead of generic Technology when applicable
-- MMA, UFC, boxing, football, basketball, etc. are ALWAYS Sports, never Technology
-- Choose up to 3 most relevant categories
-- Be precise - don't default to Technology for non-tech topics
+BUSINESS CATEGORIES (use ONLY if article is primarily about business):
+{chr(10).join('  - ' + c for c in sorted(business_cats))}
+
+RULES:
+1. Return 1-2 categories maximum. Prefer 1 specific category.
+2. NBA: ONLY for NBA league, teams, or players. NOT for college basketball.
+3. NFL: ONLY for NFL league, teams, or players. NOT for college football.
+4. Golden State Warriors: ONLY for articles specifically about the Warriors.
+5. 49ers: ONLY for articles specifically about the 49ers.
+6. College Sports: For NCAA/university athletics of any sport.
+7. Olympics & International: For Olympic Games, World Cup, international competitions.
+8. Professional Sports: For NHL, MLB, MLS, boxing, MMA, UFC, tennis, golf, and pro sports WITHOUT their own category. NEVER combine with NBA or NFL.
+9. Sports Business: ONLY for business aspects (contracts, revenue, team sales, labor). NOT for game results or athletic performance.
+10. Sports News: General catch-all. Use ONLY if no specific category fits.
+11. NEVER assign both a specific league AND Professional Sports.
+12. NEVER assign Sports News alongside a more specific category.
+13. You may assign one business category (e.g., Markets & Finance, Legal & Regulatory) if the article is genuinely about business.
 
 Article Title: {title}
 Article Summary: {summary}
 
-Return ONLY category names separated by commas (up to 3):"""
+Return ONLY category names separated by commas (1-2 categories):"""
+
+        for provider in self.provider_order:
+            result = None
+            if provider == 'anthropic' and self.anthropic_key:
+                result = self.call_anthropic(prompt, max_tokens=50)
+            elif provider == 'minai' and self.minai_key:
+                result = self.call_minai(prompt, max_tokens=50)
+            elif provider == 'deepseek' and self.deepseek_key:
+                result = self.call_deepseek(prompt, max_tokens=50)
+            elif provider == 'openai' and self.openai_key:
+                result = self.call_openai(prompt, max_tokens=50)
+            else:
+                continue
+
+            if result:
+                suggested = [cat.strip() for cat in result.split(',')]
+                valid = [cat for cat in suggested
+                         if cat in self.categories_cache
+                         and self.categories_cache[cat].get('level') == 2]
+                return valid[:2] if valid else ['Sports News']
+
+        return ['Sports News']
+
+    def categorize_with_ai(self, title, summary, main_category=None):
+        """Categorize using AI providers in configured order (only assigns level-2 categories)"""
+        if not summary:
+            return ['Global Business']
+
+        # For sports sources, use sports-specific categorization
+        if main_category == 'Sports':
+            return self._categorize_sports(title, summary)
+
+        # Build category list grouped by parent for clarity - only level 2 (assignable) categories
+        parent_groups = {}
+        for name, data in self.categories_cache.items():
+            if data.get('level') != 2:
+                continue
+            parent_id = data.get('parentID')
+            # Find parent name
+            parent_name = None
+            for pname, pdata in self.categories_cache.items():
+                if pdata.get('id') == parent_id and pdata.get('level') == 1:
+                    parent_name = pname
+                    break
+            if parent_name:
+                if parent_name not in parent_groups:
+                    parent_groups[parent_name] = []
+                desc = data.get('description', '')
+                parent_groups[parent_name].append(f"{name}: {desc}" if desc else name)
+
+        # Build structured category listing
+        category_listing = ""
+        for parent in ['Business', 'Technology', 'Sports', 'General']:
+            if parent in parent_groups:
+                category_listing += f"\n[{parent}]\n"
+                for cat in sorted(parent_groups[parent]):
+                    category_listing += f"  - {cat}\n"
+
+        prompt = f"""You are a strict news article classifier. Assign 1-3 categories to this article. You MUST follow ALL rules below.
+
+AVAILABLE CATEGORIES (grouped by parent, use ONLY the exact names before the colon):
+{category_listing}
+STRICT RULES - READ CAREFULLY:
+
+1. RETURN 1-3 CATEGORIES MAXIMUM. Prefer fewer, more accurate categories over more categories.
+2. Return ONLY exact category names from the list above, separated by commas.
+3. Each article needs at minimum 1 category but no more than 3.
+
+CATEGORY SELECTION RULES:
+
+SPORTS ARTICLES:
+- NBA: ONLY for articles specifically about the NBA league or NBA teams/players (Lakers, Celtics, etc.)
+- NFL: ONLY for articles specifically about the NFL league or NFL teams/players (Cowboys, Patriots, etc.)
+- Golden State Warriors: ONLY for articles specifically about the Warriors team
+- 49ers: ONLY for articles specifically about the San Francisco 49ers team
+- College Sports: ONLY for NCAA/university athletics
+- Olympics & International: ONLY for Olympic Games, World Cup, international competitions
+- Professional Sports: Use for NHL, MLB, MLS, boxing, MMA, UFC, tennis, golf, and other pro sports that do NOT have their own category. Do NOT combine with NBA or NFL (they are already professional).
+- Sports Business: ONLY when the article focuses on the BUSINESS side of sports (contracts, revenue, team sales, sponsorships, labor disputes). Do NOT use for game results, scores, or athletic performance.
+- Sports News: General sports catch-all. Use ONLY if no more specific sports category applies.
+
+BUSINESS ARTICLES:
+- Markets & Finance: Stock markets, trading, banking, investment, interest rates, IPOs, earnings reports
+- Economy: GDP, inflation, employment data, economic policy, recession, Federal Reserve monetary policy
+- Mergers & Acquisitions: Corporate mergers, acquisitions, buyouts, takeovers
+- Global Business: International trade, tariffs, geopolitics affecting business, foreign markets
+- Leadership: CEO appointments, executive changes, corporate governance
+- Legal & Regulatory: Lawsuits, antitrust, regulations, government investigations, compliance
+- Startups: New companies, venture capital funding rounds, entrepreneurship
+- Retail: Consumer goods, e-commerce, brick-and-mortar retail, consumer spending
+- Energy: Oil, gas, renewable energy, utilities, energy policy
+- Healthcare: Pharma, biotech, hospitals, health insurance, medical devices, drug approvals
+- Media & Entertainment: Streaming, publishing, film, TV, music industry business
+- Labor & Workforce: Unions, strikes, layoffs, hiring trends, workplace policy
+- Supply Chain: Logistics, shipping, trade routes, supply chain disruptions
+
+TECHNOLOGY ARTICLES:
+- Artificial Intelligence & ML: AI models, machine learning, LLMs, ChatGPT, AI companies, AI policy
+- Cybersecurity: Hacking, data breaches, security software, encryption, privacy violations
+- Cloud & Infrastructure: AWS, Azure, Google Cloud, data centers, server infrastructure
+- Hardware & Semiconductors: Chips, processors, NVIDIA, Intel, AMD, chip manufacturing
+- Software & Applications: Enterprise software, SaaS, developer tools, app releases
+- Consumer Technology: Smartphones, gadgets, apps, social media platforms, consumer electronics
+- Blockchain & Crypto: Bitcoin, Ethereum, cryptocurrency exchanges, DeFi, NFTs, blockchain
+- Robotics & Automation: Industrial robots, autonomous systems, warehouse automation
+- Automotive Technology: Electric vehicles, Tesla, self-driving cars, EV batteries
+- Telecom & 5G: Wireless carriers, 5G networks, telecommunications infrastructure
+
+GENERAL NEWS:
+- Politics: Government policy, elections, legislation (use ONLY if politics is the primary focus)
+- US News: Domestic US events not primarily about business or politics
+- World News: International events not primarily about business
+- Science: Scientific research, space exploration, discoveries
+- Education: Schools, universities, education policy
+- Environment & Climate: Climate change, sustainability, environmental regulations
+
+CRITICAL ANTI-OVERLAP RULES:
+- NEVER assign both a specific league (NBA, NFL) AND Professional Sports to the same article.
+- NEVER assign Sports News alongside a more specific sports category.
+- NEVER assign categories from different parent groups unless the article genuinely spans both (e.g., a tech company earnings report could be Markets & Finance + Artificial Intelligence & ML).
+- An article about an NBA team's finances gets NBA + Sports Business, NOT NBA + Professional Sports + Sports Business + Sports News.
+- An article about Olympic skiing gets Olympics & International, NOT Olympics & International + Professional Sports + Sports News.
+
+Article Title: {title}
+Article Summary: {summary}
+
+Return ONLY the category names separated by commas (1-3 categories, exact names only):"""
 
         # Try providers in configured order
         for provider in self.provider_order:
@@ -664,7 +803,10 @@ Return ONLY category names separated by commas (up to 3):"""
 
             if result:
                 suggested = [cat.strip() for cat in result.split(',')]
-                valid = [cat for cat in suggested if cat in self.categories_cache]
+                # Only accept level-2 categories
+                valid = [cat for cat in suggested
+                         if cat in self.categories_cache
+                         and self.categories_cache[cat].get('level') == 2]
                 return valid[:3] if valid else ['Global Business']
 
         return ['Global Business']

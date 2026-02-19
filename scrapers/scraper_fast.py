@@ -297,7 +297,7 @@ class FastScraper:
     def get_enabled_sources(self):
         """Get all enabled sources from database"""
         cursor = self.connection.cursor(dictionary=True)
-        cursor.execute("SELECT id, name, url FROM sources WHERE enabled = 1 ORDER BY id")
+        cursor.execute("SELECT id, name, url FROM sources WHERE isActive = 'Y' ORDER BY id")
         sources = cursor.fetchall()
         cursor.close()
         return sources

@@ -52,6 +52,21 @@ class MarketWatchMultiRSSScraper:
             print(f"✗ Error connecting to MySQL: {e}")
             return False
 
+    def is_source_enabled(self):
+        """Check if this source is active"""
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute("SELECT isActive FROM sources WHERE id = %s", (self.source_id,))
+            result = cursor.fetchone()
+            cursor.close()
+            if result is None:
+                print(f"⚠ Source ID {self.source_id} not found in database")
+                return False
+            return result[0] == 'Y'
+        except Error as e:
+            print(f"✗ Error checking source status: {e}")
+            return False
+
     def fetch_rss(self, rss_url):
         """Fetch and parse a single RSS feed"""
         try:
@@ -171,6 +186,10 @@ class MarketWatchMultiRSSScraper:
         print("=" * 60)
 
         if not self.connect_db():
+            return
+
+        if not self.is_source_enabled():
+            print(f"⊘ MarketWatch source (ID {self.source_id}) is disabled. Skipping.")
             return
 
         # Fetch articles from all RSS feeds

@@ -114,7 +114,7 @@ class ParallelSummarizer:
             LEFT JOIN sources s ON a.source_id = s.id
             WHERE (a.summary IS NULL OR a.summary = '')
             AND (a.isSummaryFailed IS NULL OR a.isSummaryFailed != 'Y')
-            AND (s.enabled = 1 OR s.id IS NULL)
+            AND (s.isActive = 'Y' OR s.id IS NULL)
             ORDER BY a.scraped_at DESC
             LIMIT %s
         """, (limit,))

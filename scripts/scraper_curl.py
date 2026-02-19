@@ -237,9 +237,9 @@ class CurlScraper:
             return 'error'
 
     def get_enabled_sources(self):
-        """Get enabled sources"""
+        """Get active sources"""
         cursor = self.connection.cursor(dictionary=True)
-        cursor.execute("SELECT id, name, url FROM sources WHERE enabled = 1")
+        cursor.execute("SELECT id, name, url FROM sources WHERE isActive = 'Y'")
         sources = cursor.fetchall()
         cursor.close()
         return sources

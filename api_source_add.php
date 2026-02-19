@@ -116,7 +116,7 @@ if (!$isAdmin) {
 }
 
 // Check if URL already exists in sources table
-$stmt = $conn->prepare("SELECT id, name, isBase FROM sources WHERE url = ?");
+$stmt = $conn->prepare("SELECT id, name, isBase, isActive FROM sources WHERE url = ?");
 $stmt->bind_param("s", $url);
 $stmt->execute();
 $existing = $stmt->get_result()->fetch_assoc();
@@ -126,6 +126,45 @@ try {
     if ($existing) {
         // Source URL already exists
         $sourceId = (int)$existing['id'];
+
+        // If the source is inactive, reactivate it
+        if ($existing['isActive'] === 'N') {
+            $reactivate = $conn->prepare("UPDATE sources SET isActive = 'Y', name = ? WHERE id = ?");
+            $reactivate->bind_param("si", $name, $sourceId);
+            $reactivate->execute();
+            $reactivate->close();
+
+            // For non-admin users, ensure the user-source relationship exists
+            if (!$isAdmin) {
+                $checkRel = $conn->prepare("SELECT id FROM users_sources WHERE user_id = ? AND source_id = ?");
+                $checkRel->bind_param("ii", $userId, $sourceId);
+                $checkRel->execute();
+                $hasRel = $checkRel->get_result()->fetch_assoc();
+                $checkRel->close();
+
+                if (!$hasRel) {
+                    $rel = $conn->prepare("INSERT INTO users_sources (user_id, source_id) VALUES (?, ?)");
+                    $rel->bind_param("ii", $userId, $sourceId);
+                    $rel->execute();
+                    $rel->close();
+
+                    $update = $conn->prepare("UPDATE users SET sourceCount = GREATEST(sourceCount - 1, 0) WHERE id = ?");
+                    $update->bind_param("i", $userId);
+                    $update->execute();
+                    $update->close();
+                }
+            }
+
+            $fetch = $conn->prepare("SELECT id, name, url, mainCategory, scrape_frequency, isActive, created_at FROM sources WHERE id = ?");
+            $fetch->bind_param("i", $sourceId);
+            $fetch->execute();
+            $source = $fetch->get_result()->fetch_assoc();
+            $fetch->close();
+
+            echo json_encode(['success' => true, 'source' => $source, 'reactivated' => true]);
+            $conn->close();
+            exit;
+        }
 
         if ($isAdmin) {
             if ($existing['isBase'] == 'Y') {
@@ -161,7 +200,7 @@ try {
             $del->close();
 
             // Fetch the promoted source
-            $fetch = $conn->prepare("SELECT id, name, url, mainCategory, scrape_frequency, enabled, created_at FROM sources WHERE id = ?");
+            $fetch = $conn->prepare("SELECT id, name, url, mainCategory, scrape_frequency, isActive, created_at FROM sources WHERE id = ?");
             $fetch->bind_param("i", $sourceId);
             $fetch->execute();
             $source = $fetch->get_result()->fetch_assoc();
@@ -205,7 +244,7 @@ try {
         $update->close();
 
         // Fetch the source
-        $fetch = $conn->prepare("SELECT id, name, url, mainCategory, scrape_frequency, enabled, created_at FROM sources WHERE id = ?");
+        $fetch = $conn->prepare("SELECT id, name, url, mainCategory, scrape_frequency, isActive, created_at FROM sources WHERE id = ?");
         $fetch->bind_param("i", $sourceId);
         $fetch->execute();
         $source = $fetch->get_result()->fetch_assoc();
@@ -216,7 +255,7 @@ try {
         // Source URL doesn't exist -- create new source
         // Admin sources: isBase='Y' (public), User sources: isBase='N' (private)
         $isBase = $isAdmin ? 'Y' : 'N';
-        $stmt = $conn->prepare("INSERT INTO sources (name, url, mainCategory, scrape_frequency, isBase, enabled) VALUES (?, ?, ?, ?, ?, 1)");
+        $stmt = $conn->prepare("INSERT INTO sources (name, url, mainCategory, scrape_frequency, isBase, isActive) VALUES (?, ?, ?, ?, ?, 'Y')");
         $stmt->bind_param("sssss", $name, $url, $mainCategory, $scrape_frequency, $isBase);
 
         if ($stmt->execute()) {
@@ -237,7 +276,7 @@ try {
             }
 
             // Fetch the created source
-            $fetch = $conn->prepare("SELECT id, name, url, mainCategory, scrape_frequency, enabled, created_at FROM sources WHERE id = ?");
+            $fetch = $conn->prepare("SELECT id, name, url, mainCategory, scrape_frequency, isActive, created_at FROM sources WHERE id = ?");
             $fetch->bind_param("i", $newSourceId);
             $fetch->execute();
             $source = $fetch->get_result()->fetch_assoc();
