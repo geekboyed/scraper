@@ -64,9 +64,9 @@ A production web scraping and AI summarization system that collects business new
 - Test new keys before deploying to production
 
 ### Cron Schedule
-- **Scraper**: Every hour at :00 (`0 * * * *`)
+- **Scraper**: Every 10 minutes (`*/10 * * * *`)
 - **Summarizer**: Every hour at :10 (`10 * * * *`)
-- Logs written to `/var/www/html/BIScrape/logs/`
+- Logs written to `/var/www/html/scraper/logs/`
 
 ### Summary Requirements
 - Target length: 200-300 words

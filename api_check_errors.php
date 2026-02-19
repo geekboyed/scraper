@@ -208,7 +208,7 @@ require_once 'config.php';
 
 if (isset($conn)) {
     $result = $conn->query("
-        SELECT a.id, a.title, s.name as source_name, a.scraped_at
+        SELECT a.id, a.title, s.name as source_name, a.scraped_at, a.summary_retry_count
         FROM articles a
         LEFT JOIN sources s ON a.source_id = s.id
         WHERE a.isSummaryFailed = 'Y'
@@ -219,6 +219,9 @@ if (isset($conn)) {
 
     if ($result) {
         while ($article = $result->fetch_assoc()) {
+            $retry_count = $article['summary_retry_count'] ?? 0;
+            $retry_text = $retry_count > 0 ? " (Retry #$retry_count)" : " (No retries yet)";
+
             $errors[] = [
                 'file' => 'Database',
                 'type' => 'Summary Failed',
@@ -226,7 +229,9 @@ if (isset($conn)) {
                 'description' => 'Article summarization failed - AI could not process content (may be paywall, privacy policy, or corrupted text)',
                 'line' => 'Article: ' . $article['title'],
                 'timestamp' => $article['scraped_at'] ?? 'Unknown',
-                'severity' => 'medium'
+                'severity' => 'medium',
+                'retry_count' => $retry_count,
+                'retry_text' => $retry_text
             ];
         }
         $result->free();
@@ -254,10 +259,24 @@ foreach ($errors as $error) {
     $error_counts[$type]++;
 }
 
+// Count by source
+$source_counts = [];
+foreach ($errors as $error) {
+    $source = $error['source'];
+    if (!isset($source_counts[$source])) {
+        $source_counts[$source] = 0;
+    }
+    $source_counts[$source]++;
+}
+
+// Sort sources by count (descending)
+arsort($source_counts);
+
 echo json_encode([
     'success' => true,
     'total_errors' => count($errors),
     'error_counts' => $error_counts,
+    'source_counts' => $source_counts,
     'errors' => $errors,
     'checked_files' => count($log_files),
     'timestamp' => date('Y-m-d H:i:s')

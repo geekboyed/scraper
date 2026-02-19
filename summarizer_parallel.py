@@ -120,20 +120,20 @@ class ParallelSummarizer:
                 -- Never attempted or not marked as failed
                 (a.isSummaryFailed IS NULL OR a.isSummaryFailed != 'Y')
                 OR
-                -- Failed but eligible for retry based on exponential backoff
-                (a.isSummaryFailed = 'Y' AND (
-                    -- Retry 1: after 1 hour (retry_count = 1)
-                    (a.summary_retry_count = 1 AND a.summary_last_attempt < DATE_SUB(NOW(), INTERVAL 1 HOUR))
-                    OR
-                    -- Retry 2: after 6 hours (retry_count = 2)
-                    (a.summary_retry_count = 2 AND a.summary_last_attempt < DATE_SUB(NOW(), INTERVAL 6 HOUR))
-                    OR
-                    -- Retry 3: after 24 hours (retry_count = 3)
-                    (a.summary_retry_count = 3 AND a.summary_last_attempt < DATE_SUB(NOW(), INTERVAL 24 HOUR))
-                    OR
-                    -- Retry 4+: after 7 days (retry_count >= 4)
-                    (a.summary_retry_count >= 4 AND a.summary_last_attempt < DATE_SUB(NOW(), INTERVAL 7 DAY))
-                ))
+                -- Failed but eligible for retry (only if article is less than 1 day old)
+                (a.isSummaryFailed = 'Y'
+                    AND a.scraped_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+                    AND (
+                        -- Retry 1: after 1 hour (retry_count = 1)
+                        (a.summary_retry_count = 1 AND a.summary_last_attempt < DATE_SUB(NOW(), INTERVAL 1 HOUR))
+                        OR
+                        -- Retry 2: after 6 hours (retry_count = 2)
+                        (a.summary_retry_count = 2 AND a.summary_last_attempt < DATE_SUB(NOW(), INTERVAL 6 HOUR))
+                        OR
+                        -- Retry 3: after 12 hours (retry_count = 3)
+                        (a.summary_retry_count = 3 AND a.summary_last_attempt < DATE_SUB(NOW(), INTERVAL 12 HOUR))
+                    )
+                )
             )
             ORDER BY a.scraped_at DESC
             LIMIT %s
@@ -266,6 +266,11 @@ class ParallelSummarizer:
 
     def get_article_content(self, url):
         """Fetch comprehensive article content for detailed summarization"""
+        # Force Playwright for JavaScript-heavy sites
+        if 'yahoo.com' in url.lower() or 'cnbc.com' in url.lower():
+            print(f"  → Using Playwright for JavaScript-heavy site")
+            return self.get_article_content_playwright(url)
+
         try:
             response = requests.get(url, headers=self.headers, timeout=20)
             response.raise_for_status()
@@ -278,13 +283,56 @@ class ParallelSummarizer:
 
             content = ""
 
-            # Method 1: Look for article tag (most reliable)
-            article_body = soup.find('article')
-            if article_body:
-                paragraphs = article_body.find_all('p')
-                content = '\n\n'.join([p.get_text(strip=True) for p in paragraphs[:40]])
+            # Method 1a: CNBC-specific selectors (high priority for CNBC articles)
+            if 'cnbc.com' in url.lower():
+                cnbc_selectors = [
+                    'div.ArticleBody-articleBody',
+                    'div.RenderKeyPoints-list',
+                    'div.group',
+                    'div[class*="ArticleBody"]',
+                    'div[class*="article-body"]',
+                ]
+                for selector in cnbc_selectors:
+                    elements = soup.select(selector)
+                    if elements:
+                        paragraphs = []
+                        for elem in elements:
+                            paragraphs.extend(elem.find_all('p'))
+                        if paragraphs:
+                            content = '\n\n'.join([p.get_text(strip=True) for p in paragraphs[:40]])
+                            if len(content) > 500:
+                                print(f"  → Using CNBC selector: {selector}")
+                                break
 
-            # Method 2: Look for main content containers
+            # Method 1b: Yahoo Finance-specific selectors
+            if not content and 'yahoo.com' in url.lower():
+                yahoo_selectors = [
+                    'div.caas-body',
+                    'div.article-body',
+                    'div[class*="caas-body"]',
+                    'div[class*="article-wrap"]',
+                    'article div.body',
+                ]
+                for selector in yahoo_selectors:
+                    elements = soup.select(selector)
+                    if elements:
+                        paragraphs = []
+                        for elem in elements:
+                            paragraphs.extend(elem.find_all('p'))
+                        if paragraphs:
+                            content = '\n\n'.join([p.get_text(strip=True) for p in paragraphs[:40]])
+                            if len(content) > 500:
+                                print(f"  → Using Yahoo Finance selector: {selector}")
+                                break
+
+            # Method 2: Look for article tag (most reliable)
+            if not content or len(content) < 500:
+                article_body = soup.find('article')
+                if article_body:
+                    paragraphs = article_body.find_all('p')
+                    content = '\n\n'.join([p.get_text(strip=True) for p in paragraphs[:40]])
+
+            # Method 4: Look for main content containers
             if not content or len(content) < 500:
                 containers = soup.find_all(['div', 'section', 'main'], class_=lambda x: x and any(
                     term in str(x).lower() for term in ['content', 'article', 'post', 'body', 'text', 'story']
@@ -296,7 +344,7 @@ class ParallelSummarizer:
                         if len(content) > 500:
                             break
 
-            # Method 3: Get all substantial paragraphs
+            # Method 5: Get all substantial paragraphs
             if not content or len(content) < 500:
                 all_paragraphs = soup.find_all('p')
                 # Filter paragraphs - keep those with substantial content
@@ -317,6 +365,11 @@ class ParallelSummarizer:
                 print(f"  → Trying Google Cache backup...")
                 content = self.get_article_from_google_cache(url)
 
+            # Check if content is cookie consent/privacy policy text
+            if content and self.is_cookie_consent_content(content):
+                print(f"  ⊘ Cookie consent/privacy policy content detected, rejecting")
+                return ""
+
             # Return extensive content for comprehensive summaries (200+ words needs 1500+ words input)
             return content[:10000] if content else ""
 
@@ -330,6 +383,11 @@ class ParallelSummarizer:
             if not content or len(content) < 100:
                 print(f"  → Trying Google Cache backup...")
                 content = self.get_article_from_google_cache(url)
+
+            # Check if content is cookie consent/privacy policy text
+            if content and self.is_cookie_consent_content(content):
+                print(f"  ⊘ Cookie consent/privacy policy content detected, rejecting")
+                return ""
 
             return content
 
@@ -611,6 +669,65 @@ Return ONLY category names separated by commas (up to 3):"""
 
         return ['Global Business']
 
+    def is_cookie_consent_content(self, content):
+        """Detect if content is primarily cookie consent/privacy policy text instead of article content"""
+        if not content:
+            return False
+
+        content_lower = content.lower()
+
+        # Strong indicators - directly cookie/consent related, unlikely in real articles
+        strong_patterns = [
+            'cookie consent', 'cookie policy', 'cookie settings', 'cookie preferences',
+            'manage cookies', 'accept cookies', 'reject cookies', 'accept all cookies',
+            'we use cookies', 'this site uses cookies', 'uses cookies to',
+            'consent to the use', 'consent preferences',
+            'third-party cookies', 'third party cookies',
+            'strictly necessary cookies', 'functional cookies',
+            'performance cookies', 'targeting cookies', 'advertising cookies',
+            'analytics cookies',
+            # Region blocks and access restrictions
+            'content not available in your region',
+            'not available in your location',
+            'access denied from your location',
+            'content is not available in',
+            'service is not available',
+            'this content is currently unavailable',
+            'yahoo is part of the yahoo family',
+            'oath and our partners',
+        ]
+
+        # Weaker indicators - may appear in legitimate privacy-related articles
+        weak_patterns = [
+            'privacy policy notice', 'privacy settings', 'your privacy choices',
+            'your privacy rights', 'manage your privacy',
+            'tracking technology', 'tracking technologies',
+            'opt-out instructions', 'opt out of',
+            'data processing', 'personal data',
+            'gdpr', 'ccpa', 'california consumer privacy',
+            'legitimate interest', 'legitimate business interest',
+            'continue to yahoo',
+            'sign in to continue',
+            'create an account',
+        ]
+
+        strong_matches = sum(1 for p in strong_patterns if p in content_lower)
+        weak_matches = sum(1 for p in weak_patterns if p in content_lower)
+
+        # Any 2+ strong matches = cookie content
+        if strong_matches >= 2:
+            return True
+
+        # 1 strong + 2 weak = cookie content
+        if strong_matches >= 1 and weak_matches >= 2:
+            return True
+
+        # For short content (<2000 chars), 1 strong + 1 weak is suspicious
+        if len(content) < 2000 and strong_matches >= 1 and weak_matches >= 1:
+            return True
+
+        return False
+
     def has_paywall(self, content):
         """Detect if content indicates a paywall"""
         if not content:
@@ -747,7 +864,11 @@ Return ONLY category names separated by commas (up to 3):"""
                 print(f"  → Fetched from URL ({len(url_content)} chars)")
                 content = url_content
             elif has_existing:
-                # Fallback to existing fullArticle
+                # Fallback to existing fullArticle, but check for cookie content
+                if self.is_cookie_consent_content(content):
+                    print(f"  ⊘ Existing fullArticle is cookie consent/privacy policy content")
+                    self.mark_article_failed(article['id'], retry_count)
+                    return False
                 print(f"  → Using existing fullArticle ({len(content)} chars)")
             else:
                 # No content available
@@ -785,7 +906,7 @@ Return ONLY category names separated by commas (up to 3):"""
             self.mark_article_failed(article['id'], retry_count)
             return False
 
-    def run(self, batch_size=20, max_workers=5):
+    def run(self, batch_size=30, max_workers=5):
         """Run parallel processing"""
         print("=" * 60)
         print(f"Parallel Article Summarizer ({' → '.join(self.provider_order)})")
@@ -822,7 +943,7 @@ Return ONLY category names separated by commas (up to 3):"""
             self.connection.close()
 
 if __name__ == "__main__":
-    batch_size = int(sys.argv[1]) if len(sys.argv) > 1 else 20
+    batch_size = int(sys.argv[1]) if len(sys.argv) > 1 else 30
     max_workers = int(sys.argv[2]) if len(sys.argv) > 2 else 5
 
     summarizer = ParallelSummarizer()

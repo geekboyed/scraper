@@ -10,6 +10,28 @@ ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 
 require_once 'config.php';
+require_once 'auth_check.php';
+
+// Redirect to login if not authenticated
+if (!$current_user) {
+    header('Location: login.php');
+    exit;
+}
+
+// Load user preferences
+$user_preferences = null;
+$preferred_sources = [];
+$preferred_categories = [];
+$default_view = 'all';
+
+if ($current_user && $current_user['preferenceJSON']) {
+    $user_preferences = json_decode($current_user['preferenceJSON'], true);
+    if ($user_preferences) {
+        $preferred_sources = isset($user_preferences['sources']) ? $user_preferences['sources'] : [];
+        $preferred_categories = isset($user_preferences['categories']) ? $user_preferences['categories'] : [];
+        $default_view = isset($user_preferences['defaultView']) ? $user_preferences['defaultView'] : 'all';
+    }
+}
 
 // Get filter parameters
 $category_filter = isset($_GET['category']) ? (is_array($_GET['category']) ? array_map('intval', $_GET['category']) : [(int)$_GET['category']]) : [];
@@ -18,6 +40,31 @@ $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 $date_filter = isset($_GET['date']) ? $_GET['date'] : '1day'; // Default to '1day'
 $page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
 $page_size = isset($_GET['size']) ? (int)$_GET['size'] : 50;
+
+// Apply default view if no explicit filter is set in URL
+$has_explicit_filter = !empty($category_filter) || !empty($source_filter) ||
+                       isset($_GET['tech']) || isset($_GET['business']) || isset($_GET['sports']);
+
+if (!$has_explicit_filter && $default_view !== 'all') {
+    // Auto-redirect to apply default view
+    $redirect_url = 'index.php?';
+    switch ($default_view) {
+        case 'tech':
+            $redirect_url .= 'tech=1';
+            break;
+        case 'business':
+            $redirect_url .= 'business=1';
+            break;
+        case 'sports':
+            $redirect_url .= 'sports=1';
+            break;
+    }
+    if ($date_filter !== '1day') {
+        $redirect_url .= '&date=' . urlencode($date_filter);
+    }
+    header('Location: ' . $redirect_url);
+    exit;
+}
 
 // Build query
 $query = "SELECT a.id, a.title, a.url, a.published_date, a.summary, a.scraped_at, a.fullArticle, a.hasPaywall,
@@ -59,6 +106,35 @@ if ($tech_filter) {
     }
 }
 
+// Filter sources by user visibility: non-admins see base sources + their own linked sources
+if ($current_user && $current_user['isAdmin'] != 'Y') {
+    $where[] = "(s.isBase = 'Y' OR (s.isBase = 'N' AND s.id IN (SELECT source_id FROM users_sources WHERE user_id = ?)))";
+    $params[] = (int)$current_user['id'];
+    $types .= 'i';
+}
+
+// ALWAYS apply user preference filters first (if they exist)
+// Apply preferred sources filter
+if (!empty($preferred_sources)) {
+    $placeholders = implode(',', array_fill(0, count($preferred_sources), '?'));
+    $where[] = "a.source_id IN ($placeholders)";
+    foreach ($preferred_sources as $src_id) {
+        $params[] = $src_id;
+        $types .= 'i';
+    }
+}
+
+// Apply preferred categories filter
+if (!empty($preferred_categories)) {
+    $placeholders = implode(',', array_fill(0, count($preferred_categories), '?'));
+    $where[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a.id AND category_id IN ($placeholders))";
+    foreach ($preferred_categories as $cat_id) {
+        $params[] = $cat_id;
+        $types .= 'i';
+    }
+}
+
+// Then apply quick filter overrides on top
 if (!empty($source_filter)) {
     // Handle multiple source selection
     $placeholders = implode(',', array_fill(0, count($source_filter), '?'));
@@ -248,8 +324,16 @@ if (!empty($sources_conditions)) {
 
 $sources_query .= ") as article_count
     FROM sources s
-    WHERE s.enabled = 1
-    ORDER BY s.name";
+    WHERE s.enabled = 1";
+
+// Filter sources by user visibility: base sources + user's linked sources
+if ($current_user && $current_user['isAdmin'] != 'Y') {
+    $sources_query .= " AND (s.isBase = 'Y' OR (s.isBase = 'N' AND s.id IN (SELECT source_id FROM users_sources WHERE user_id = ?)))";
+    $sources_params[] = (int)$current_user['id'];
+    $sources_types .= 'i';
+}
+
+$sources_query .= " ORDER BY s.name";
 
 if (!empty($sources_params)) {
     $sources_stmt = $conn->prepare($sources_query);
@@ -258,6 +342,20 @@ if (!empty($sources_params)) {
     $sources_result = $sources_stmt->get_result();
 } else {
     $sources_result = $conn->query($sources_query);
+}
+
+// Get all sources with main category for sources modal
+if ($current_user && $current_user['isAdmin'] != 'Y') {
+    $all_sources_stmt = $conn->prepare("SELECT id, name, mainCategory, enabled, articles_count FROM sources WHERE isBase = 'Y' OR (isBase = 'N' AND id IN (SELECT source_id FROM users_sources WHERE user_id = ?)) ORDER BY name ASC");
+    $all_sources_stmt->bind_param("i", $current_user['id']);
+    $all_sources_stmt->execute();
+    $all_sources_result = $all_sources_stmt->get_result();
+} else {
+    $all_sources_result = $conn->query("SELECT id, name, mainCategory, enabled, articles_count FROM sources ORDER BY name ASC");
+}
+$all_sources = [];
+while ($source = $all_sources_result->fetch_assoc()) {
+    $all_sources[] = $source;
 }
 
 // Get count of unsummarized articles (excluding failed)
@@ -299,18 +397,25 @@ if ($last_scrape_time !== 'Never') {
 
         .container {
             max-width: 1200px;
+            width: 100%;
             margin: 0 auto;
         }
 
         header {
             background: white;
-            padding: 30px;
+            padding: 20px;
             border-radius: 10px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            margin-bottom: 30px;
+            margin-bottom: 20px;
             display: flex;
+            flex-wrap: wrap;
             justify-content: space-between;
-            align-items: center;
+            align-items: flex-start;
+            gap: 15px;
+        }
+
+        header > * {
+            min-width: 0;
         }
 
         h1 {
@@ -363,7 +468,7 @@ if ($last_scrape_time !== 'Never') {
 
         .search-box input:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: #2563eb;
         }
 
         .category-filter select {
@@ -378,41 +483,54 @@ if ($last_scrape_time !== 'Never') {
 
         .category-filter select:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: #2563eb;
         }
 
         .btn {
             padding: 12px 25px;
-            background: #667eea;
+            background: #2563eb;
             color: white;
             border: none;
-            border-radius: 5px;
+            border-radius: 6px;
             cursor: pointer;
             font-size: 14px;
             font-weight: 600;
-            transition: background 0.3s;
+            letter-spacing: 0.01em;
+            transition: background 0.2s, box-shadow 0.2s;
             text-decoration: none;
             display: inline-block;
         }
 
         .btn:hover {
-            background: #5568d3;
+            background: #1d4ed8;
+            box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
         }
 
         .btn-secondary {
-            background: #6c757d;
+            background: #64748b;
         }
 
         .btn-secondary:hover {
-            background: #5a6268;
+            background: #475569;
+            box-shadow: 0 2px 8px rgba(100, 116, 139, 0.3);
         }
 
         .btn-success {
-            background: #28a745;
+            background: #2563eb;
         }
 
         .btn-success:hover {
-            background: #218838;
+            background: #1d4ed8;
+            box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+        }
+
+        .btn-danger {
+            background: #dc2626;
+        }
+
+        .btn-danger:hover {
+            background: #b91c1c;
+            box-shadow: 0 2px 8px rgba(220, 38, 38, 0.3);
         }
 
         .btn:disabled {
@@ -513,7 +631,7 @@ if ($last_scrape_time !== 'Never') {
         }
 
         .article-title a:hover {
-            color: #667eea;
+            color: #2563eb;
         }
 
         .article-date {
@@ -543,30 +661,32 @@ if ($last_scrape_time !== 'Never') {
             padding: 15px;
             border-radius: 8px;
             margin: 10px 0 0 0;
-            border-left: 4px solid #667eea;
+            border-left: 4px solid #2563eb;
             font-size: 1.15em;
             line-height: 1.8;
         }
 
         .btn-read-summary {
-            background: #28a745;
+            background: #2563eb;
             color: white;
             border: none;
             padding: 6px 14px;
-            border-radius: 5px;
+            border-radius: 6px;
             cursor: pointer;
             font-size: 0.85em;
             font-weight: 600;
-            transition: background 0.3s;
+            letter-spacing: 0.01em;
+            transition: background 0.2s, box-shadow 0.2s;
             white-space: nowrap;
         }
 
         .btn-read-summary:hover {
-            background: #218838;
+            background: #1d4ed8;
+            box-shadow: 0 2px 6px rgba(37, 99, 235, 0.3);
         }
 
         .btn-read-summary.active {
-            background: #6c757d;
+            background: #64748b;
         }
 
         .article-footer {
@@ -585,7 +705,7 @@ if ($last_scrape_time !== 'Never') {
         }
 
         .category-tag {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #2563eb;
             color: white;
             padding: 4px 10px;
             border-radius: 12px;
@@ -598,7 +718,7 @@ if ($last_scrape_time !== 'Never') {
 
         .category-tag:hover {
             transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(102, 126, 234, 0.3);
+            box-shadow: 0 4px 8px rgba(37, 99, 235, 0.3);
             color: white;
             text-decoration: none;
         }
@@ -647,17 +767,17 @@ if ($last_scrape_time !== 'Never') {
         }
 
         .pagination a:hover {
-            background: #667eea;
+            background: #2563eb;
             color: white;
-            border-color: #667eea;
+            border-color: #2563eb;
             transform: translateY(-2px);
             box-shadow: 0 2px 4px rgba(0,0,0,0.2);
         }
 
         .pagination .current {
-            background: #667eea;
+            background: #2563eb;
             color: white;
-            border-color: #667eea;
+            border-color: #2563eb;
             font-weight: 700;
             font-size: 18px;
         }
@@ -699,7 +819,7 @@ if ($last_scrape_time !== 'Never') {
 
         .modal-header {
             padding: 20px 30px;
-            background: linear-gradient(135deg, #dc3545 0%, #c82333 100%);
+            background: #1e293b;
             color: white;
             border-radius: 10px 10px 0 0;
             display: flex;
@@ -746,7 +866,7 @@ if ($last_scrape_time !== 'Never') {
             padding: 15px;
             border-radius: 8px;
             margin-bottom: 20px;
-            border-left: 4px solid #667eea;
+            border-left: 4px solid #2563eb;
         }
 
         .article-meta h3 {
@@ -755,7 +875,7 @@ if ($last_scrape_time !== 'Never') {
         }
 
         .article-meta a {
-            color: #667eea;
+            color: #2563eb;
             text-decoration: none;
         }
 
@@ -776,7 +896,7 @@ if ($last_scrape_time !== 'Never') {
             border-radius: 8px;
             flex: 1;
             min-width: 150px;
-            border-left: 4px solid #dc3545;
+            border-left: 4px solid #dc2626;
         }
 
         .error-stat-label {
@@ -805,7 +925,7 @@ if ($last_scrape_time !== 'Never') {
         }
 
         .error-item.severity-high {
-            border-left: 4px solid #dc3545;
+            border-left: 4px solid #dc2626;
         }
 
         .error-item.severity-medium {
@@ -821,7 +941,7 @@ if ($last_scrape_time !== 'Never') {
 
         .error-type {
             font-weight: bold;
-            color: #dc3545;
+            color: #dc2626;
             font-size: 1.1em;
         }
 
@@ -836,7 +956,7 @@ if ($last_scrape_time !== 'Never') {
 
         .error-file {
             font-size: 0.85em;
-            color: #007bff;
+            color: #2563eb;
             margin-bottom: 8px;
         }
 
@@ -853,7 +973,7 @@ if ($last_scrape_time !== 'Never') {
         .no-errors {
             text-align: center;
             padding: 40px;
-            color: #28a745;
+            color: #2563eb;
         }
 
         .no-errors h3 {
@@ -862,8 +982,22 @@ if ($last_scrape_time !== 'Never') {
         }
 
         @media (max-width: 768px) {
+            body {
+                padding: 10px;
+            }
+
             h1 {
-                font-size: 1.8em;
+                font-size: 1.5em;
+            }
+
+            .subtitle {
+                font-size: 0.95em;
+            }
+
+            header {
+                flex-direction: column;
+                padding: 20px;
+                gap: 15px;
             }
 
             .controls {
@@ -874,8 +1008,16 @@ if ($last_scrape_time !== 'Never') {
                 width: 100%;
             }
 
+            .article-card {
+                padding: 15px;
+            }
+
             .article-header {
                 flex-direction: column;
+            }
+
+            .article-title h2 {
+                font-size: 1.1em;
             }
 
             .article-footer {
@@ -888,13 +1030,187 @@ if ($last_scrape_time !== 'Never') {
                 width: 100%;
             }
 
+            .btn-read-summary {
+                padding: 10px 16px;
+                font-size: 0.9em;
+            }
+
             .modal-content {
-                width: 95%;
-                margin: 20px auto;
+                width: 98%;
+                margin: 10px auto;
+                max-height: 95vh;
+            }
+
+            .modal-header {
+                padding: 15px 20px;
+            }
+
+            .modal-header h2 {
+                font-size: 1.2em;
+            }
+
+            .modal-body {
+                padding: 15px;
             }
 
             .error-summary {
                 flex-direction: column;
+            }
+
+            .header-actions {
+                align-items: stretch !important;
+                width: 100%;
+            }
+
+            .header-buttons-row {
+                flex-wrap: wrap !important;
+                justify-content: center !important;
+            }
+
+            .header-buttons-row .btn,
+            .header-buttons-row .tooltip-wrapper {
+                flex: 1 1 auto;
+                min-width: 0;
+            }
+
+            .quick-filters-row {
+                justify-content: center;
+            }
+
+            .search-form {
+                width: 100%;
+                margin-left: 0 !important;
+            }
+
+            .search-form input[type="text"] {
+                width: 100% !important;
+                min-width: 0 !important;
+            }
+
+            .filter-controls-row {
+                justify-content: center;
+            }
+
+            .pagination {
+                padding: 15px;
+                gap: 8px;
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .pagination-stats {
+                text-align: center;
+                width: 100%;
+            }
+
+            .pagination-controls {
+                justify-content: center;
+            }
+
+            .pagination a, .pagination span {
+                padding: 8px 10px;
+                font-size: 14px;
+                min-width: 36px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            body {
+                padding: 6px;
+            }
+
+            h1 {
+                font-size: 1.3em;
+            }
+
+            .subtitle {
+                font-size: 0.85em;
+            }
+
+            header {
+                padding: 15px;
+            }
+
+            .header-buttons-row {
+                gap: 6px !important;
+            }
+
+            .header-buttons-row .btn {
+                padding: 10px 12px !important;
+                font-size: 13px !important;
+                min-width: 0 !important;
+                height: auto !important;
+            }
+
+            .quick-filters-row .btn {
+                padding: 10px 14px !important;
+                font-size: 13px;
+            }
+
+            .article-card {
+                padding: 12px;
+            }
+
+            .article-title h2 {
+                font-size: 1em;
+            }
+
+            .source-badge {
+                display: block;
+                margin-left: 0;
+                margin-top: 5px;
+            }
+
+            .article-date {
+                font-size: 0.8em;
+            }
+
+            .summary-visible {
+                font-size: 1em;
+                line-height: 1.6;
+                padding: 12px;
+            }
+
+            .category-tag {
+                font-size: 0.7em;
+                padding: 4px 8px;
+            }
+
+            .modal-content {
+                width: 100%;
+                margin: 0;
+                border-radius: 0;
+                max-height: 100vh;
+                min-height: 100vh;
+            }
+
+            .modal-header {
+                border-radius: 0;
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+
+            .modal-header h2 {
+                font-size: 1.1em;
+            }
+
+            .fulltext-content {
+                font-size: 1em;
+                line-height: 1.6;
+            }
+
+            .pagination {
+                padding: 10px;
+            }
+
+            .pagination a, .pagination span {
+                padding: 6px 8px;
+                font-size: 13px;
+                min-width: 32px;
+            }
+
+            .pagination-controls {
+                gap: 5px !important;
             }
         }
 
@@ -903,7 +1219,7 @@ if ($last_scrape_time !== 'Never') {
             position: fixed;
             top: 20px;
             right: 20px;
-            background: #667eea;
+            background: #2563eb;
             color: white;
             border: none;
             border-radius: 50%;
@@ -924,7 +1240,7 @@ if ($last_scrape_time !== 'Never') {
         }
 
         #backToTop:hover {
-            background: #5568d3;
+            background: #1d4ed8;
             transform: translateY(-3px);
             box-shadow: 0 6px 12px rgba(0,0,0,0.4);
         }
@@ -1009,7 +1325,7 @@ if ($last_scrape_time !== 'Never') {
                 currentSpeech = null;
                 currentArticleId = null;
                 btn.textContent = '🔊 Read Aloud';
-                btn.style.background = '#17a2b8';
+                btn.style.background = '#2563eb';
                 return;
             }
 
@@ -1020,7 +1336,7 @@ if ($last_scrape_time !== 'Never') {
                 const prevBtn = document.querySelector('[data-article-id="' + currentArticleId + '"]');
                 if (prevBtn) {
                     prevBtn.textContent = '🔊 Read Aloud';
-                    prevBtn.style.background = '#17a2b8';
+                    prevBtn.style.background = '#2563eb';
                 }
             }
 
@@ -1064,20 +1380,20 @@ if ($last_scrape_time !== 'Never') {
 
             // Update button state
             btn.textContent = '⏸️ Stop';
-            btn.style.background = '#dc3545';
+            btn.style.background = '#dc2626';
             btn.setAttribute('data-article-id', articleId);
 
             // Event handlers
             utterance.onend = function() {
                 btn.textContent = '🔊 Read Aloud';
-                btn.style.background = '#17a2b8';
+                btn.style.background = '#2563eb';
                 currentSpeech = null;
                 currentArticleId = null;
             };
 
             utterance.onerror = function(event) {
                 btn.textContent = '🔊 Read Aloud';
-                btn.style.background = '#17a2b8';
+                btn.style.background = '#2563eb';
                 currentSpeech = null;
                 currentArticleId = null;
 
@@ -1190,15 +1506,13 @@ if ($last_scrape_time !== 'Never') {
                         icon.textContent = '✓';
                         text.textContent = 'Complete!';
 
-                        // Show popup if new articles found
-                        if (data.new_articles > 0) {
-                            alert(`✅ Scraping Complete!\n\n${data.new_articles} new article${data.new_articles !== 1 ? 's' : ''} added to the database.`);
-                        }
+                        // Show popup with results
+                        showScrapeResults(data);
 
-                        // Reload page after showing popup
+                        // Reload page after 3 seconds
                         setTimeout(() => {
                             window.location.reload();
-                        }, 500);
+                        }, 3000);
                     } else {
                         icon.textContent = '✗';
                         text.textContent = 'Error';
@@ -1368,7 +1682,7 @@ if ($last_scrape_time !== 'Never') {
 
             // Error counts by type
             if (data.error_counts) {
-                html += '<div style="margin-bottom: 20px;"><strong>Error Types:</strong> ';
+                html += '<div style="margin-bottom: 15px;"><strong>Error Types:</strong> ';
                 const types = [];
                 for (const [type, count] of Object.entries(data.error_counts)) {
                     types.push(type + ' (' + count + ')');
@@ -1377,16 +1691,41 @@ if ($last_scrape_time !== 'Never') {
                 html += '</div>';
             }
 
+            // Error counts by source
+            if (data.source_counts) {
+                html += '<div style="margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px;">';
+                html += '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">';
+                html += '<strong style="font-size: 1.1em;">📊 Errors by Source:</strong>';
+                html += '<button id="showAllErrors" onclick="filterErrorsBySource(null)" style="display: none; padding: 6px 12px; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9em;">Show All</button>';
+                html += '</div>';
+                html += '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px;">';
+                for (const [source, count] of Object.entries(data.source_counts)) {
+                    const percentage = Math.round((count / data.total_errors) * 100);
+                    html += '<div class="source-filter-card" data-source="' + escapeHtml(source) + '" onclick="filterErrorsBySource(\'' + escapeHtml(source).replace(/'/g, "\\'") + '\')" style="background: white; padding: 10px; border-radius: 5px; border-left: 4px solid #dc2626; cursor: pointer; transition: all 0.2s;" onmouseover="this.style.transform=\'translateY(-2px)\'; this.style.boxShadow=\'0 4px 8px rgba(0,0,0,0.1)\';" onmouseout="this.style.transform=\'translateY(0)\'; this.style.boxShadow=\'none\';">';
+                    html += '<div style="font-weight: 600; color: #333;">' + escapeHtml(source) + '</div>';
+                    html += '<div style="font-size: 1.3em; color: #dc2626; font-weight: 700;">' + count + '</div>';
+                    html += '<div style="font-size: 0.85em; color: #666;">' + percentage + '% of total</div>';
+                    html += '</div>';
+                }
+                html += '</div></div>';
+            }
+
             // Individual errors
-            html += '<h3 style="margin-bottom: 15px;">Error Details:</h3>';
+            html += '<h3 style="margin-bottom: 15px;" id="errorDetailsHeader">Error Details:</h3>';
             data.errors.forEach(error => {
-                html += '<div class="error-item severity-' + error.severity + '">';
+                html += '<div class="error-item severity-' + error.severity + '" data-error-source="' + escapeHtml(error.source || 'Unknown') + '">';
                 html += '<div class="error-header">';
                 html += '<span class="error-type">' + escapeHtml(error.type) + '</span>';
+                if (error.retry_count !== undefined) {
+                    const retryBadge = error.retry_count > 0
+                        ? '<span style="background: #fbbf24; color: #000; padding: 2px 8px; border-radius: 10px; font-size: 0.85em; margin-left: 8px;">🔄 Retry #' + error.retry_count + '</span>'
+                        : '<span style="background: #64748b; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.85em; margin-left: 8px;">First attempt</span>';
+                    html += retryBadge;
+                }
                 html += '<span class="error-timestamp">' + escapeHtml(error.timestamp) + '</span>';
                 html += '</div>';
                 html += '<div class="error-file">📁 ' + escapeHtml(error.file) + ' &nbsp;|&nbsp; 🌐 ' + escapeHtml(error.source || 'Unknown') + '</div>';
-                html += '<div class="error-description" style="color: #dc3545; font-weight: 500; margin: 8px 0; font-size: 0.95em;">💡 ' + escapeHtml(error.description || '') + '</div>';
+                html += '<div class="error-description" style="color: #dc2626; font-weight: 500; margin: 8px 0; font-size: 0.95em;">💡 ' + escapeHtml(error.description || '') + '</div>';
                 html += '<div class="error-message">' + escapeHtml(error.line) + '</div>';
                 html += '</div>';
             });
@@ -1398,6 +1737,112 @@ if ($last_scrape_time !== 'Never') {
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        function filterErrorsBySource(sourceName) {
+            const errorItems = document.querySelectorAll('.error-item');
+            const showAllBtn = document.getElementById('showAllErrors');
+            const sourceCards = document.querySelectorAll('.source-filter-card');
+            const header = document.getElementById('errorDetailsHeader');
+
+            if (sourceName === null) {
+                // Show all errors
+                errorItems.forEach(item => {
+                    item.style.display = 'block';
+                });
+                showAllBtn.style.display = 'none';
+                header.textContent = 'Error Details:';
+
+                // Reset card highlighting
+                sourceCards.forEach(card => {
+                    card.style.borderLeft = '4px solid #dc2626';
+                    card.style.background = 'white';
+                });
+            } else {
+                // Filter by source
+                let visibleCount = 0;
+                errorItems.forEach(item => {
+                    const itemSource = item.getAttribute('data-error-source');
+                    if (itemSource === sourceName) {
+                        item.style.display = 'block';
+                        visibleCount++;
+                    } else {
+                        item.style.display = 'none';
+                    }
+                });
+                showAllBtn.style.display = 'inline-block';
+                header.textContent = 'Error Details: ' + sourceName + ' (' + visibleCount + ')';
+
+                // Highlight selected card
+                sourceCards.forEach(card => {
+                    if (card.getAttribute('data-source') === sourceName) {
+                        card.style.borderLeft = '4px solid #2563eb';
+                        card.style.background = '#eff6ff';
+                    } else {
+                        card.style.borderLeft = '4px solid #dc2626';
+                        card.style.background = 'white';
+                    }
+                });
+            }
+        }
+
+        function showScrapeResults(data) {
+            const modal = document.getElementById('scrapeResultsModal');
+            const modalBody = document.getElementById('scrapeResultsBody');
+
+            let html = '<div style="text-align: center; padding: 20px;">';
+            html += '<div style="font-size: 4em; margin-bottom: 20px;">✅</div>';
+            html += '<h2 style="color: #2563eb; margin-bottom: 20px;">Scraping Complete!</h2>';
+
+            // Stats grid
+            html += '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin: 30px 0;">';
+
+            // New articles
+            html += '<div style="background: #dbeafe; padding: 20px; border-radius: 10px; border: 2px solid #2563eb;">';
+            html += '<div style="font-size: 2.5em; font-weight: 700; color: #1e40af;">' + (data.new_articles || 0) + '</div>';
+            html += '<div style="color: #1e40af; font-weight: 600; margin-top: 5px;">New Articles</div>';
+            html += '</div>';
+
+            // Total found (if available)
+            if (data.total_found !== undefined) {
+                html += '<div style="background: #e2e8f0; padding: 20px; border-radius: 10px; border: 2px solid #64748b;">';
+                html += '<div style="font-size: 2.5em; font-weight: 700; color: #334155;">' + data.total_found + '</div>';
+                html += '<div style="color: #334155; font-weight: 600; margin-top: 5px;">Total Found</div>';
+                html += '</div>';
+            }
+
+            // Sources scraped (if available)
+            if (data.sources_scraped !== undefined) {
+                html += '<div style="background: #e2e8f0; padding: 20px; border-radius: 10px; border: 2px solid #64748b;">';
+                html += '<div style="font-size: 2.5em; font-weight: 700; color: #334155;">' + data.sources_scraped + '</div>';
+                html += '<div style="color: #334155; font-weight: 600; margin-top: 5px;">Sources</div>';
+                html += '</div>';
+            }
+
+            html += '</div>';
+
+            if (data.message) {
+                html += '<p style="color: #666; margin-top: 15px;">' + escapeHtml(data.message) + '</p>';
+            }
+
+            html += '<p style="color: #999; margin-top: 20px; font-size: 0.9em;">Page will refresh automatically...</p>';
+            html += '</div>';
+
+            modalBody.innerHTML = html;
+            modal.style.display = 'block';
+        }
+
+        function closeScrapeResultsModal() {
+            document.getElementById('scrapeResultsModal').style.display = 'none';
+        }
+
+        function showSourcesModal() {
+            const modal = document.getElementById('sourcesModal');
+            modal.style.display = 'block';
+        }
+
+        function closeSourcesModal() {
+            document.getElementById('sourcesModal').style.display = 'none';
         }
 
         function closeErrorModal() {
@@ -1447,11 +1892,139 @@ if ($last_scrape_time !== 'Never') {
             document.getElementById('fulltextModal').style.display = 'none';
         }
 
+        // User Preferences Functions
+        async function showPreferencesModal() {
+            try {
+                const response = await fetch('api_get_preferences.php');
+                const data = await response.json();
+
+                if (!data.success) {
+                    alert('Error loading preferences: ' + data.error);
+                    return;
+                }
+
+                // Populate sources checkboxes
+                const sourcesDiv = document.getElementById('sourcesCheckboxes');
+                sourcesDiv.innerHTML = '';
+                data.sources.forEach(source => {
+                    const isChecked = !data.preferences || !data.preferences.sources ||
+                                     data.preferences.sources.length === 0 ||
+                                     data.preferences.sources.includes(parseInt(source.id));
+                    const label = document.createElement('label');
+                    label.style.cssText = 'display: flex; align-items: center; cursor: pointer; padding: 5px;';
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.className = 'pref-source';
+                    checkbox.value = source.id;
+                    checkbox.checked = isChecked;
+                    checkbox.style.cssText = 'margin-right: 8px; cursor: pointer;';
+                    const span = document.createElement('span');
+                    span.textContent = source.name;
+                    label.appendChild(checkbox);
+                    label.appendChild(span);
+                    sourcesDiv.appendChild(label);
+                });
+
+                // Populate categories checkboxes
+                const categoriesDiv = document.getElementById('categoriesCheckboxes');
+                categoriesDiv.innerHTML = '';
+                data.categories.forEach(category => {
+                    const isChecked = !data.preferences || !data.preferences.categories ||
+                                     data.preferences.categories.length === 0 ||
+                                     data.preferences.categories.includes(parseInt(category.id));
+                    const label = document.createElement('label');
+                    label.style.cssText = 'display: flex; align-items: center; cursor: pointer; padding: 5px;';
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.className = 'pref-category';
+                    checkbox.value = category.id;
+                    checkbox.checked = isChecked;
+                    checkbox.style.cssText = 'margin-right: 8px; cursor: pointer;';
+                    const span = document.createElement('span');
+                    span.textContent = category.name;
+                    label.appendChild(checkbox);
+                    label.appendChild(span);
+                    categoriesDiv.appendChild(label);
+                });
+
+                // Set default view radio button
+                const defaultView = (data.preferences && data.preferences.defaultView) ? data.preferences.defaultView : 'all';
+                const defaultViewRadios = document.querySelectorAll('.pref-default-view');
+                defaultViewRadios.forEach(radio => {
+                    radio.checked = (radio.value === defaultView);
+                });
+
+                // Show modal
+                document.getElementById('preferencesModal').style.display = 'block';
+            } catch (error) {
+                alert('Error loading preferences: ' + error.message);
+            }
+        }
+
+        function closePreferencesModal() {
+            document.getElementById('preferencesModal').style.display = 'none';
+        }
+
+        async function savePreferences() {
+            try {
+                // Collect checked sources
+                const sources = Array.from(document.querySelectorAll('.pref-source:checked'))
+                    .map(cb => parseInt(cb.value));
+
+                // Collect checked categories
+                const categories = Array.from(document.querySelectorAll('.pref-category:checked'))
+                    .map(cb => parseInt(cb.value));
+
+                // Get selected default view
+                const defaultViewRadio = document.querySelector('.pref-default-view:checked');
+                const defaultView = defaultViewRadio ? defaultViewRadio.value : 'all';
+
+                // Save preferences
+                const response = await fetch('api_save_preferences.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        sources: sources,
+                        categories: categories,
+                        defaultView: defaultView
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    alert('Preferences saved successfully!');
+                    closePreferencesModal();
+                    // Reload page to apply new preferences
+                    window.location.reload();
+                } else {
+                    alert('Error saving preferences: ' + data.error);
+                }
+            } catch (error) {
+                alert('Error saving preferences: ' + error.message);
+            }
+        }
+
+        function toggleAllSources(checked) {
+            document.querySelectorAll('.pref-source').forEach(cb => {
+                cb.checked = checked;
+            });
+        }
+
+        function toggleAllCategories(checked) {
+            document.querySelectorAll('.pref-category').forEach(cb => {
+                cb.checked = checked;
+            });
+        }
+
         // Close modals when clicking outside
         window.onclick = function(event) {
             const errorsModal = document.getElementById('errorsModal');
             const fulltextModal = document.getElementById('fulltextModal');
             const filtersModal = document.getElementById('filtersModal');
+            const preferencesModal = document.getElementById('preferencesModal');
 
             if (event.target == errorsModal) {
                 errorsModal.style.display = 'none';
@@ -1461,6 +2034,13 @@ if ($last_scrape_time !== 'Never') {
             }
             if (event.target === filtersModal) {
                 closeFiltersModal();
+            }
+            if (event.target === preferencesModal) {
+                closePreferencesModal();
+            }
+            const addSourceModal = document.getElementById('addSourceModal');
+            if (event.target === addSourceModal) {
+                closeAddSourceModal();
             }
         }
 
@@ -1545,6 +2125,15 @@ if ($last_scrape_time !== 'Never') {
             // User can click "Apply Filters" to apply the cleared state
         }
 
+        function clearSearchAndRefresh() {
+            // Build URL with all current parameters except search
+            const params = new URLSearchParams(window.location.search);
+            params.delete('search');
+
+            const url = 'index.php' + (params.toString() ? '?' + params.toString() : '');
+            window.location.href = url;
+        }
+
         // Select/Clear All functions
         function selectAllSources() {
             document.querySelectorAll('.source-filter').forEach(cb => {
@@ -1583,6 +2172,229 @@ if ($last_scrape_time !== 'Never') {
                 cb.checked = (cb.value == sourceId);
             });
         }
+
+        // ========== Add Source Functions ==========
+
+        function showAddSourceModal() {
+            const btn = document.getElementById('addSourceBtn');
+            const isAdmin = btn.dataset.isAdmin;
+            const sourceLimit = btn.dataset.sourceLimit;
+            const remaining = parseInt(btn.dataset.sourceCount) || 0;
+
+            // Check if user has reached their limit (non-admins only)
+            if (sourceLimit !== 'unlimited' && remaining <= 0) {
+                alert('You have reached your limit (0 remaining). Please contact an admin to increase your limit.');
+                return;
+            }
+
+            // Update source count display
+            const countDisplay = document.getElementById('sourceCountDisplay');
+            if (sourceLimit === 'unlimited') {
+                countDisplay.textContent = 'unlimited sources';
+            } else {
+                countDisplay.textContent = 'You have ' + remaining + ' source' + (remaining !== 1 ? 's' : '') + ' remaining';
+            }
+
+            // Reset form and messages
+            document.getElementById('addSourceForm').reset();
+            document.getElementById('addSourceError').style.display = 'none';
+            document.getElementById('addSourceSuccess').style.display = 'none';
+            document.getElementById('addSourceSubmitBtn').disabled = false;
+            document.getElementById('addSourceSubmitBtn').textContent = 'Add Source';
+            clearAddSourceFieldErrors();
+            updateCategoryRadioStyles();
+
+            // Show modal
+            document.getElementById('addSourceModal').style.display = 'block';
+            document.body.style.overflow = 'hidden';
+
+            // Focus on the name input
+            setTimeout(function() {
+                document.getElementById('newSourceName').focus();
+            }, 100);
+        }
+
+        function closeAddSourceModal() {
+            document.getElementById('addSourceModal').style.display = 'none';
+            document.body.style.overflow = 'auto';
+        }
+
+        function clearAddSourceFieldErrors() {
+            document.getElementById('nameError').style.display = 'none';
+            document.getElementById('urlError').style.display = 'none';
+            document.getElementById('newSourceName').style.borderColor = '#e0e0e0';
+            document.getElementById('newSourceUrl').style.borderColor = '#e0e0e0';
+        }
+
+        function validateAddSourceForm() {
+            clearAddSourceFieldErrors();
+            let isValid = true;
+
+            const name = document.getElementById('newSourceName').value.trim();
+            const url = document.getElementById('newSourceUrl').value.trim();
+
+            if (!name || name.length < 2) {
+                document.getElementById('nameError').textContent = 'Source name must be at least 2 characters.';
+                document.getElementById('nameError').style.display = 'block';
+                document.getElementById('newSourceName').style.borderColor = '#dc3545';
+                isValid = false;
+            }
+
+            if (!url) {
+                document.getElementById('urlError').textContent = 'URL is required.';
+                document.getElementById('urlError').style.display = 'block';
+                document.getElementById('newSourceUrl').style.borderColor = '#dc3545';
+                isValid = false;
+            } else {
+                try {
+                    const parsedUrl = new URL(url);
+                    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+                        throw new Error('Invalid protocol');
+                    }
+                } catch (e) {
+                    document.getElementById('urlError').textContent = 'Please enter a valid HTTP or HTTPS URL.';
+                    document.getElementById('urlError').style.display = 'block';
+                    document.getElementById('newSourceUrl').style.borderColor = '#dc3545';
+                    isValid = false;
+                }
+            }
+
+            return isValid;
+        }
+
+        async function submitAddSource(event) {
+            event.preventDefault();
+
+            if (!validateAddSourceForm()) {
+                return;
+            }
+
+            const submitBtn = document.getElementById('addSourceSubmitBtn');
+            const errorDiv = document.getElementById('addSourceError');
+            const successDiv = document.getElementById('addSourceSuccess');
+
+            // Disable button and show loading
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Adding...';
+            errorDiv.style.display = 'none';
+            successDiv.style.display = 'none';
+
+            const name = document.getElementById('newSourceName').value.trim();
+            const url = document.getElementById('newSourceUrl').value.trim();
+            const category = document.querySelector('input[name="newSourceCategory"]:checked').value;
+
+            try {
+                const response = await fetch('api_source_add.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        name: name,
+                        url: url,
+                        mainCategory: category
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    // Show success message
+                    successDiv.textContent = 'Source "' + name + '" added successfully!';
+                    successDiv.style.display = 'block';
+
+                    // Update remaining source count on the button
+                    const btn = document.getElementById('addSourceBtn');
+                    const sourceLimit = btn.dataset.sourceLimit;
+                    if (sourceLimit !== 'unlimited') {
+                        const newRemaining = Math.max((parseInt(btn.dataset.sourceCount) || 0) - 1, 0);
+                        btn.dataset.sourceCount = newRemaining;
+
+                        // Update count display
+                        const countDisplay = document.getElementById('sourceCountDisplay');
+                        countDisplay.textContent = 'You have ' + newRemaining + ' source' + (newRemaining !== 1 ? 's' : '') + ' remaining';
+
+                        // Disable button if limit reached
+                        if (newRemaining <= 0) {
+                            btn.disabled = true;
+                            btn.style.opacity = '0.5';
+                            btn.style.cursor = 'not-allowed';
+                            btn.title = 'No more sources available';
+                        }
+                    }
+
+                    // Reset form after short delay and close
+                    setTimeout(function() {
+                        closeAddSourceModal();
+                        window.location.reload();
+                    }, 1500);
+                } else {
+                    errorDiv.textContent = data.error || 'Failed to add source. Please try again.';
+                    errorDiv.style.display = 'block';
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = 'Add Source';
+                }
+            } catch (error) {
+                errorDiv.textContent = 'Network error: ' + error.message;
+                errorDiv.style.display = 'block';
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Add Source';
+            }
+        }
+
+        // Style radio buttons for category selection in Add Source modal
+        function updateCategoryRadioStyles() {
+            document.querySelectorAll('#addSourceForm input[name="newSourceCategory"]').forEach(function(radio) {
+                const label = radio.parentElement;
+                if (radio.checked) {
+                    label.style.background = '#667eea';
+                    label.style.color = 'white';
+                    label.style.borderColor = '#667eea';
+                } else {
+                    label.style.background = '#e0e0e0';
+                    label.style.color = '#333';
+                    label.style.borderColor = '#ccc';
+                }
+            });
+        }
+
+        // Add event listeners for category radio button styling once DOM is ready
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelectorAll('#addSourceForm input[name="newSourceCategory"]').forEach(function(radio) {
+                radio.addEventListener('change', updateCategoryRadioStyles);
+            });
+        });
+
+        // Real-time validation on input
+        document.addEventListener('DOMContentLoaded', function() {
+            const nameInput = document.getElementById('newSourceName');
+            const urlInput = document.getElementById('newSourceUrl');
+
+            if (nameInput) {
+                nameInput.addEventListener('input', function() {
+                    if (this.value.trim().length >= 2) {
+                        document.getElementById('nameError').style.display = 'none';
+                        this.style.borderColor = '#e0e0e0';
+                    }
+                });
+            }
+
+            if (urlInput) {
+                urlInput.addEventListener('input', function() {
+                    if (this.value.trim()) {
+                        try {
+                            const parsedUrl = new URL(this.value.trim());
+                            if (['http:', 'https:'].includes(parsedUrl.protocol)) {
+                                document.getElementById('urlError').style.display = 'none';
+                                this.style.borderColor = '#e0e0e0';
+                            }
+                        } catch (e) {
+                            // Still invalid, keep error if shown
+                        }
+                    }
+                });
+            }
+        });
     </script>
 </head>
 <body>
@@ -1597,27 +2409,60 @@ if ($last_scrape_time !== 'Never') {
                 <h1>📰 News Dashboard</h1>
                 <p class="subtitle">Latest business news articles, automatically scraped and categorized</p>
             </div>
-            <div style="display: flex; gap: 10px;">
-                <div class="tooltip-wrapper">
-                    <button id="scrapeBtn" class="btn btn-success" onclick="startScrape()">
-                        <span id="scrapeIcon">🔄</span> <span id="scrapeText">Scrape</span>
+            <div class="header-actions" style="display: flex; flex-direction: column; gap: 10px; align-items: flex-end;">
+                <!-- Main Action Buttons Row -->
+                <div class="header-buttons-row" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end;">
+                    <?php if ($current_user && $current_user['isAdmin'] == 'Y'): ?>
+                    <div class="tooltip-wrapper">
+                        <button id="scrapeBtn" class="btn btn-success" onclick="startScrape()" style="min-width: 120px; height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap;">
+                            <span id="scrapeIcon">🔄</span> <span id="scrapeText">Scrape</span>
+                        </button>
+                        <span class="tooltip-text">
+                            Last scrape: <?php echo $last_scrape_formatted; ?>
+                        </span>
+                    </div>
+                    <div class="tooltip-wrapper">
+                        <button id="summarizeBtn" class="btn btn-success" onclick="startSummarize()" style="min-width: 120px; height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap;">
+                            <span id="summarizeIcon">📝</span> <span id="summarizeText">Summarize (<?php echo $unsummarized_count; ?>)</span>
+                        </button>
+                        <span class="tooltip-text">
+                            <?php echo $unsummarized_count; ?> article<?php echo $unsummarized_count != 1 ? 's' : ''; ?> need summarization
+                        </span>
+                    </div>
+                    <button id="errorsBtn" class="btn btn-danger" onclick="checkErrors()" style="min-width: 120px; height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap;">
+                        <span id="errorsIcon">⚠️</span> <span id="errorsText">Errors</span>
                     </button>
-                    <span class="tooltip-text">
-                        Last scrape: <?php echo $last_scrape_formatted; ?>
-                    </span>
-                </div>
-                <div class="tooltip-wrapper">
-                    <button id="summarizeBtn" class="btn btn-success" onclick="startSummarize()">
-                        <span id="summarizeIcon">📝</span> <span id="summarizeText">Summarize (<?php echo $unsummarized_count; ?>)</span>
+                    <a href="sources.php" class="btn" style="min-width: 120px; text-align: center; height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap;">Sources</a>
+                    <?php endif; ?>
+                    <?php if ($current_user):
+                        $is_admin = ($current_user['isAdmin'] == 'Y');
+                        $remaining = isset($current_user['sourceCount']) ? (int)$current_user['sourceCount'] : 0;
+                        $limit_reached = !$is_admin && $remaining <= 0;
+                    ?>
+                    <button id="addSourceBtn" onclick="showAddSourceModal()" class="btn btn-success" style="height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; padding: 12px 20px; gap: 5px;<?php echo $limit_reached ? ' opacity: 0.5; cursor: not-allowed;' : ''; ?>"
+                            data-is-admin="<?php echo $current_user['isAdmin']; ?>"
+                            data-source-limit="<?php echo $is_admin ? 'unlimited' : '5'; ?>"
+                            data-source-count="<?php echo $remaining; ?>"
+                            <?php echo $limit_reached ? 'disabled title="No more sources available"' : ''; ?>>
+                        + Add Source
                     </button>
-                    <span class="tooltip-text">
-                        <?php echo $unsummarized_count; ?> article<?php echo $unsummarized_count != 1 ? 's' : ''; ?> need summarization
-                    </span>
+                    <?php endif; ?>
+                    <button onclick="showPreferencesModal()" class="btn" style="height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; padding: 12px 20px; gap: 5px;">
+                        ⚙️ Preferences
+                    </button>
+                    <a href="logout.php" class="btn btn-secondary" style="height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap;">Logout</a>
                 </div>
-                <button id="errorsBtn" class="btn" onclick="checkErrors()" style="background: #dc3545;">
-                    <span id="errorsIcon">⚠️</span> <span id="errorsText">Errors</span>
-                </button>
-                <a href="sources.php" class="btn">Sources</a>
+                <!-- Management Buttons Row (Admin Only) -->
+                <?php if ($current_user && $current_user['isAdmin'] == 'Y'): ?>
+                <div class="header-buttons-row" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end;">
+                    <a href="admin_users.php" class="btn" style="text-align: center; height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; padding: 12px 20px;">
+                        👥 Manage Users
+                    </a>
+                    <a href="admin_invites.php" class="btn" style="text-align: center; height: 44px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; padding: 12px 20px;">
+                        🎫 Manage Codes
+                    </a>
+                </div>
+                <?php endif; ?>
             </div>
         </header>
 
@@ -1625,37 +2470,49 @@ if ($last_scrape_time !== 'Never') {
         <div class="controls" style="flex-direction: column; align-items: stretch;">
             <!-- Quick Filter Buttons -->
             <!-- Line 1: Category Buttons and Search -->
-            <div style="margin-bottom: 8px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+            <div class="quick-filters-row" style="margin-bottom: 8px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
                 <a href="?date=1day"
                    class="btn"
-                   style="<?php echo (!isset($_GET['tech']) && !isset($_GET['business']) && !isset($_GET['sports']) && empty($category_filter)) ? 'background: #667eea; color: white;' : 'background: #f8f9fa; color: #333; border: 2px solid #667eea;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 5px; font-weight: 600; display: inline-block;">
+                   style="<?php echo (!isset($_GET['tech']) && !isset($_GET['business']) && !isset($_GET['sports']) && empty($category_filter)) ? 'background: #2563eb; color: white;' : 'background: #f8f9fa; color: #334155; border: 2px solid #2563eb;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
                     📰 All Articles
                 </a>
                 <a href="?tech=1&date=1day"
                    class="btn"
-                   style="<?php echo isset($_GET['tech']) ? 'background: #667eea; color: white;' : 'background: #f8f9fa; color: #333; border: 2px solid #667eea;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 5px; font-weight: 600; display: inline-block;">
+                   style="<?php echo isset($_GET['tech']) ? 'background: #2563eb; color: white;' : 'background: #f8f9fa; color: #334155; border: 2px solid #2563eb;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
                     🖥️ Technology
                 </a>
                 <a href="?business=1&date=1day"
                    class="btn"
-                   style="<?php echo isset($_GET['business']) ? 'background: #667eea; color: white;' : 'background: #f8f9fa; color: #333; border: 2px solid #667eea;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 5px; font-weight: 600; display: inline-block;">
+                   style="<?php echo isset($_GET['business']) ? 'background: #2563eb; color: white;' : 'background: #f8f9fa; color: #334155; border: 2px solid #2563eb;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
                     💼 Business
                 </a>
                 <a href="?sports=1&date=1day"
                    class="btn"
-                   style="<?php echo isset($_GET['sports']) ? 'background: #667eea; color: white;' : 'background: #f8f9fa; color: #333; border: 2px solid #667eea;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 5px; font-weight: 600; display: inline-block;">
+                   style="<?php echo isset($_GET['sports']) ? 'background: #2563eb; color: white;' : 'background: #f8f9fa; color: #334155; border: 2px solid #2563eb;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
                     ⚽ Sports
                 </a>
 
                 <!-- Search Form (aligned right on same line) -->
-                <form method="GET" style="display: flex; gap: 8px; align-items: center; margin: 0; margin-left: auto;">
-                    <input type="text"
-                           name="search"
-                           placeholder="Search articles..."
-                           value="<?php echo htmlspecialchars($search); ?>"
-                           style="padding: 12px 15px; border: 2px solid #e0e0e0; border-radius: 5px; font-size: 14px; width: 250px; outline: none;">
+                <form class="search-form" method="GET" style="display: flex; gap: 8px; align-items: center; margin: 0; margin-left: auto;">
+                    <div style="position: relative; display: inline-block;">
+                        <input type="text"
+                               id="searchInput"
+                               name="search"
+                               placeholder="Search articles..."
+                               value="<?php echo htmlspecialchars($search); ?>"
+                               style="padding: 12px 15px; padding-right: <?php echo !empty($search) ? '35px' : '15px'; ?>; border: 2px solid #e0e0e0; border-radius: 5px; font-size: 14px; width: 250px; outline: none;">
+                        <?php if (!empty($search)): ?>
+                        <button type="button"
+                                onclick="clearSearchAndRefresh();"
+                                style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: #dc2626; color: white; border: none; border-radius: 3px; width: 22px; height: 22px; cursor: pointer; font-size: 14px; line-height: 1; padding: 0; display: flex; align-items: center; justify-content: center;"
+                                onmouseover="this.style.background='#b91c1c';"
+                                onmouseout="this.style.background='#dc2626';">
+                            ✕
+                        </button>
+                        <?php endif; ?>
+                    </div>
                     <button type="submit"
-                            style="padding: 12px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 14px; white-space: nowrap;">
+                            style="padding: 12px 20px; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px; white-space: nowrap;">
                         🔍 Search
                     </button>
                     <?php foreach ($category_filter as $cat_id): ?>
@@ -1667,20 +2524,38 @@ if ($last_scrape_time !== 'Never') {
                     <?php if ($date_filter && $date_filter !== 'all'): ?>
                         <input type="hidden" name="date" value="<?php echo $date_filter; ?>">
                     <?php endif; ?>
+                    <?php if ($tech_filter): ?>
+                        <input type="hidden" name="tech" value="1">
+                    <?php endif; ?>
+                    <?php if ($business_filter): ?>
+                        <input type="hidden" name="business" value="1">
+                    <?php endif; ?>
+                    <?php if ($sports_filter): ?>
+                        <input type="hidden" name="sports" value="1">
+                    <?php endif; ?>
                 </form>
             </div>
 
             <!-- Line 2: Filter Button and Active Filters -->
             <div style="margin-bottom: 5px;">
-                <div style="display: flex; gap: 12px; align-items: center;">
-                    <div style="display: flex; gap: 12px; align-items: center;">
+                <div class="filter-controls-row" style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                    <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
                         <!-- Filter Button with Tooltip -->
                         <div style="position: relative; display: inline-block;">
                             <button onclick="openFiltersModal()"
-                                    style="padding: 12px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 14px; white-space: nowrap;">
+                                    style="padding: 12px 20px; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px; white-space: nowrap;">
                                 🔍 Filters<?php if (!empty($source_filter) || !empty($category_filter)) echo ' (' . (count($source_filter) + count($category_filter)) . ')'; ?>
                             </button>
-                            <?php if (!empty($source_filter) || !empty($category_filter)): ?>
+                        </div>
+
+                        <!-- Current Sources Button -->
+                        <button onclick="showSourcesModal()"
+                                style="padding: 12px 20px; background: #64748b; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px; white-space: nowrap;">
+                            📰 Current Sources
+                        </button>
+
+                        <?php if (!empty($source_filter) || !empty($category_filter)): ?>
+                        <div style="position: relative; display: inline-block;">
                             <div class="filter-tooltip" style="position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); margin-bottom: 8px; background: #333; color: white; padding: 10px 15px; border-radius: 5px; font-size: 12px; white-space: nowrap; opacity: 0; visibility: hidden; transition: opacity 0.2s, visibility 0.2s; z-index: 1000; pointer-events: none;">
                                 <?php
                                 $tooltip_parts = [];
@@ -1715,8 +2590,18 @@ if ($last_scrape_time !== 'Never') {
                                 ?>
                                 <div style="position: absolute; top: 100%; left: 50%; transform: translateX(-50%); width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 6px solid #333;"></div>
                             </div>
-                            <?php endif; ?>
                         </div>
+                        <?php endif; ?>
+
+                        <!-- Clear Filter Button -->
+                        <?php if (!empty($source_filter) || !empty($category_filter) || !empty($search)): ?>
+                        <a href="index.php<?php echo (!empty($date_filter) && $date_filter !== 'all') ? '?date=' . urlencode($date_filter) : ''; ?>"
+                           style="padding: 12px 20px; background: #dc2626; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px; white-space: nowrap; text-decoration: none; display: inline-block;"
+                           onmouseover="this.style.background='#b91c1c';"
+                           onmouseout="this.style.background='#dc2626';">
+                            ✕ Clear Filters
+                        </a>
+                        <?php endif; ?>
 
                         <!-- Active Category Filters Display -->
                         <?php if (!empty($category_filter)): ?>
@@ -1761,8 +2646,8 @@ if ($last_scrape_time !== 'Never') {
                                         }
                             ?>
                                         <a href="<?php echo $remove_url; ?>"
-                                           style="display: inline-flex; align-items: center; gap: 8px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 8px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; text-decoration: none; transition: all 0.2s ease;"
-                                           onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 8px rgba(102, 126, 234, 0.4)';"
+                                           style="display: inline-flex; align-items: center; gap: 8px; background: #2563eb; color: white; padding: 8px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; text-decoration: none; transition: all 0.2s ease;"
+                                           onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 8px rgba(37, 99, 235, 0.4)';"
                                            onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='none';">
                                             <span><?php echo htmlspecialchars($cat['name']); ?></span>
                                             <span style="font-size: 18px; line-height: 1; font-weight: bold; opacity: 0.9;">×</span>
@@ -1770,6 +2655,64 @@ if ($last_scrape_time !== 'Never') {
                             <?php
                                     endwhile;
                                     $cat_display_stmt->close();
+                                }
+                            }
+                            ?>
+                            </div>
+                        <?php endif; ?>
+
+                        <!-- Active Source Filters Display -->
+                        <?php if (!empty($source_filter)): ?>
+                            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                            <?php
+                            if (count($source_filter) > 0) {
+                                $placeholders = implode(',', array_fill(0, count($source_filter), '?'));
+                                $src_display_stmt = $conn->prepare("SELECT id, name FROM sources WHERE id IN ($placeholders)");
+                                if ($src_display_stmt) {
+                                    $src_display_stmt->bind_param(str_repeat('i', count($source_filter)), ...$source_filter);
+                                    $src_display_stmt->execute();
+                                    $src_display_result = $src_display_stmt->get_result();
+                                    while ($src = $src_display_result->fetch_assoc()):
+                                        // Build URL to remove this specific source filter
+                                        $remaining_srcs = array_diff($source_filter, [$src['id']]);
+                                        $remove_url = '?';
+                                        $url_params = [];
+
+                                        // Keep category filters
+                                        foreach ($category_filter as $cat_id) {
+                                            $url_params[] = 'category[]=' . urlencode($cat_id);
+                                        }
+
+                                        // Keep other source filters
+                                        foreach ($remaining_srcs as $remaining_src) {
+                                            $url_params[] = 'source[]=' . urlencode($remaining_src);
+                                        }
+
+                                        // Keep search
+                                        if (!empty($search)) {
+                                            $url_params[] = 'search=' . urlencode($search);
+                                        }
+
+                                        // Keep date filter
+                                        if (!empty($date_filter)) {
+                                            $url_params[] = 'date=' . urlencode($date_filter);
+                                        }
+
+                                        $remove_url .= implode('&', $url_params);
+                                        if (empty($url_params)) {
+                                            $remove_url = 'index.php'; // Default to index if no params
+                                        }
+                            ?>
+                                        <a href="<?php echo $remove_url; ?>"
+                                           style="display: inline-flex; align-items: center; gap: 8px; background: #64748b; color: white; padding: 8px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; text-decoration: none; transition: all 0.2s ease;"
+                                           onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 8px rgba(100, 116, 139, 0.4)';"
+                                           onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='none';">
+                                            <span><?php echo htmlspecialchars($src['name']); ?></span>
+                                            <span style="font-size: 18px; line-height: 1; font-weight: bold; opacity: 0.9;">×</span>
+                                        </a>
+                            <?php
+                                    endwhile;
+                                    $src_display_stmt->close();
                                 }
                             }
                             ?>
@@ -1784,20 +2727,20 @@ if ($last_scrape_time !== 'Never') {
             <div id="filtersModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; overflow-y: auto;">
                 <div onclick="event.stopPropagation()" style="background: white; margin: 30px auto; max-width: 1200px; border-radius: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); position: relative;">
                     <!-- Modal Header -->
-                    <div style="padding: 20px 25px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 10px 10px 0 0; display: flex; justify-content: space-between; align-items: center;">
+                    <div style="padding: 20px 25px; background: #1e293b; border-radius: 10px 10px 0 0; display: flex; justify-content: space-between; align-items: center;">
                         <h2 style="color: white; margin: 0;">🔍 Filter Articles</h2>
                         <button onclick="closeFiltersModal()" style="background: transparent; border: none; color: white; font-size: 32px; cursor: pointer; line-height: 1; padding: 0; width: 32px; height: 32px;">&times;</button>
                     </div>
 
                     <!-- Action Buttons -->
                     <div style="padding: 15px 25px; background: #f8f9fa; border-bottom: 1px solid #e0e0e0; display: flex; gap: 10px; justify-content: flex-end;">
-                        <button onclick="selectAllFilters()" style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 14px;">
+                        <button onclick="selectAllFilters()" style="padding: 10px 20px; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px;">
                             Select All
                         </button>
-                        <button onclick="clearFilters()" style="padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 14px;">
+                        <button onclick="clearFilters()" style="padding: 10px 20px; background: #64748b; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px;">
                             Unselect All
                         </button>
-                        <button onclick="closeFiltersModal()" style="padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 14px;">
+                        <button onclick="closeFiltersModal()" style="padding: 10px 20px; background: #64748b; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px;">
                             Close
                         </button>
                     </div>
@@ -1808,18 +2751,22 @@ if ($last_scrape_time !== 'Never') {
 
                         <!-- Sources Checkboxes -->
                         <div>
-                            <h3 style="margin-bottom: 10px; font-size: 14px; font-weight: 600; color: #667eea;">SOURCES</h3>
+                            <h3 style="margin-bottom: 10px; font-size: 14px; font-weight: 600; color: #2563eb;">SOURCES</h3>
                             <div style="margin-bottom: 10px; display: flex; gap: 5px;">
-                                <button onclick="selectAllSources(); return false;" style="padding: 5px 10px; background: #667eea; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 12px; font-weight: 600;">
+                                <button onclick="selectAllSources(); return false;" style="padding: 5px 10px; background: #2563eb; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">
                                     Select All
                                 </button>
-                                <button onclick="clearAllSources(); return false;" style="padding: 5px 10px; background: #6c757d; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 12px; font-weight: 600;">
+                                <button onclick="clearAllSources(); return false;" style="padding: 5px 10px; background: #64748b; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">
                                     Clear All
                                 </button>
                             </div>
                             <?php
                             $sources_result->data_seek(0);
                             while ($src = $sources_result->fetch_assoc()):
+                                // Skip if user has preferences and this source is not in them
+                                if (!empty($preferred_sources) && !in_array($src['id'], $preferred_sources)) {
+                                    continue;
+                                }
                             ?>
                                 <label style="display: block; margin-bottom: 8px; cursor: pointer;">
                                     <input type="checkbox" class="source-filter" value="<?php echo $src['id']; ?>"
@@ -1832,12 +2779,12 @@ if ($last_scrape_time !== 'Never') {
 
                         <!-- Categories Checkboxes -->
                         <div>
-                            <h3 style="margin-bottom: 10px; font-size: 14px; font-weight: 600; color: #667eea;">CATEGORIES</h3>
+                            <h3 style="margin-bottom: 10px; font-size: 14px; font-weight: 600; color: #2563eb;">CATEGORIES</h3>
                             <div style="margin-bottom: 10px; display: flex; gap: 5px;">
-                                <button onclick="selectAllCategories(); return false;" style="padding: 5px 10px; background: #667eea; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 12px; font-weight: 600;">
+                                <button onclick="selectAllCategories(); return false;" style="padding: 5px 10px; background: #2563eb; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">
                                     Select All
                                 </button>
-                                <button onclick="clearAllCategories(); return false;" style="padding: 5px 10px; background: #6c757d; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 12px; font-weight: 600;">
+                                <button onclick="clearAllCategories(); return false;" style="padding: 5px 10px; background: #64748b; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">
                                     Clear All
                                 </button>
                             </div>
@@ -1845,6 +2792,10 @@ if ($last_scrape_time !== 'Never') {
                             <?php
                             $categories_result->data_seek(0);
                             while ($cat = $categories_result->fetch_assoc()):
+                                // Skip if user has preferences and this category is not in them
+                                if (!empty($preferred_categories) && !in_array($cat['id'], $preferred_categories)) {
+                                    continue;
+                                }
                             ?>
                                 <label style="display: block; margin-bottom: 8px; cursor: pointer; white-space: nowrap;">
                                     <input type="checkbox" class="category-filter" value="<?php echo $cat['id']; ?>"
@@ -1852,7 +2803,7 @@ if ($last_scrape_time !== 'Never') {
                                            style="margin-right: 8px;">
                                     <?php echo htmlspecialchars($cat['name']); ?> <span style="color: #999;">(<?php echo $cat['article_count']; ?>)</span>
                                     <a href="javascript:void(0)" onclick="selectOnlyCategory(<?php echo $cat['id']; ?>); event.stopPropagation();"
-                                       style="margin-left: 5px; font-size: 11px; color: #667eea; text-decoration: none; font-weight: 600;">only</a>
+                                       style="margin-left: 5px; font-size: 11px; color: #2563eb; text-decoration: none; font-weight: 600;">only</a>
                                 </label>
                             <?php endwhile; ?>
                             </div>
@@ -1860,7 +2811,7 @@ if ($last_scrape_time !== 'Never') {
 
                         <!-- Time Frame Radio Buttons -->
                         <div>
-                            <h3 style="margin-bottom: 10px; font-size: 14px; font-weight: 600; color: #667eea;">TIME FRAME</h3>
+                            <h3 style="margin-bottom: 10px; font-size: 14px; font-weight: 600; color: #2563eb;">TIME FRAME</h3>
                             <label style="display: block; margin-bottom: 8px; cursor: pointer;">
                                 <input type="radio" name="date-filter" value="1day"
                                        <?php echo (!$date_filter || $date_filter == '1day') ? 'checked' : ''; ?>
@@ -1888,9 +2839,9 @@ if ($last_scrape_time !== 'Never') {
 
                             <!-- Apply Filters Button -->
                             <button onclick="applyFilters()"
-                                    onmouseover="this.style.background='#5568d3'; this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 12px rgba(102, 126, 234, 0.4)';"
-                                    onmouseout="this.style.background='#667eea'; this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 6px rgba(102, 126, 234, 0.3)';"
-                                    style="width: 100%; margin-top: 20px; padding: 15px 25px; background: #667eea; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 16px; box-shadow: 0 4px 6px rgba(102, 126, 234, 0.3); transition: all 0.2s ease;">
+                                    onmouseover="this.style.background='#1d4ed8'; this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 12px rgba(37, 99, 235, 0.4)';"
+                                    onmouseout="this.style.background='#2563eb'; this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 6px rgba(37, 99, 235, 0.3)';"
+                                    style="width: 100%; margin-top: 20px; padding: 15px 25px; background: #2563eb; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 16px; box-shadow: 0 4px 6px rgba(37, 99, 235, 0.3); transition: all 0.2s ease;">
                                 Apply Filters
                             </button>
                         </div>
@@ -1921,7 +2872,7 @@ if ($last_scrape_time !== 'Never') {
         <!-- Combined Stats & Pagination -->
         <div class="pagination" style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px; border-bottom: 1px solid #e0e0e0; padding-bottom: 10px; margin-bottom: 10px;">
             <!-- Stats -->
-            <div style="font-size: 14px; color: #666;">
+            <div class="pagination-stats" style="font-size: 14px; color: #666;">
                 Showing <?php echo ($offset + 1); ?>-<?php echo min($offset + $result->num_rows, $total_articles); ?>
                 of <?php echo $total_articles; ?> article<?php echo $total_articles != 1 ? 's' : ''; ?>
                 (Page <?php echo $page; ?> of <?php echo max(1, $total_pages); ?>)
@@ -1929,7 +2880,7 @@ if ($last_scrape_time !== 'Never') {
 
             <!-- Pagination Controls -->
             <?php if ($total_pages > 1): ?>
-            <div style="display: flex; align-items: center; gap: 10px;">
+            <div class="pagination-controls" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
                 <!-- First Page -->
                 <?php if ($page > 1): ?>
                     <a href="<?php echo buildPageUrl(1, $query_params); ?>">«</a>
@@ -1996,10 +2947,10 @@ if ($last_scrape_time !== 'Never') {
                 </form>
 
                 <!-- Expand/Minimize All Buttons -->
-                <button onclick="expandAll()" class="btn" style="background: #28a745; color: white; padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; margin-left: 15px;">
+                <button onclick="expandAll()" class="btn" style="color: white; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; margin-left: 15px;">
                     ▼ Expand All
                 </button>
-                <button onclick="minimizeAll()" class="btn" style="background: #6c757d; color: white; padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px;">
+                <button onclick="minimizeAll()" class="btn btn-secondary" style="color: white; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px;">
                     ▲ Minimize All
                 </button>
             </div>
@@ -2035,19 +2986,19 @@ if ($last_scrape_time !== 'Never') {
                                     <button class="btn-read-summary" onclick="toggleSummary(<?php echo $row['id']; ?>)">
                                         📖 Read Summary
                                     </button>
-                                    <button class="btn-read-summary" onclick="readAloud(<?php echo $row['id']; ?>)" style="background: #17a2b8;">
+                                    <button class="btn-read-summary" onclick="readAloud(<?php echo $row['id']; ?>)">
                                         🔊 Read Aloud
                                     </button>
                                     <?php if ($row['fullArticle'] && trim($row['fullArticle']) != ''): ?>
-                                    <button class="btn-read-summary" onclick="showFullText(<?php echo $row['id']; ?>)" style="background: #6f42c1;">
+                                    <button class="btn-read-summary" onclick="showFullText(<?php echo $row['id']; ?>)">
                                         📄 Full Text
                                     </button>
                                     <?php endif; ?>
                                     <a href="<?php echo htmlspecialchars($row['url']); ?>"
                                        target="_article"
                                        class="btn-read-summary"
-                                       style="text-decoration: none; display: inline-flex; align-items: center; background: #007bff;">
-                                        🔗 Read Article<?php if (isset($row['hasPaywall']) && $row['hasPaywall'] === 'Y'): ?> <span style="color: #ffc107; font-weight: bold;">(paywall)</span><?php endif; ?>
+                                       style="text-decoration: none; display: inline-flex; align-items: center;">
+                                        🔗 Read Article<?php if (isset($row['hasPaywall']) && $row['hasPaywall'] === 'Y'): ?> <span style="color: #fbbf24; font-weight: bold;">(paywall)</span><?php endif; ?>
                                     </a>
                                 </div>
                                 <?php if ($row['categories']): ?>
@@ -2084,8 +3035,8 @@ if ($last_scrape_time !== 'Never') {
                                 <a href="<?php echo htmlspecialchars($row['url']); ?>"
                                    target="_article"
                                    class="btn-read-summary"
-                                   style="text-decoration: none; display: inline-flex; align-items: center; background: #007bff;">
-                                    🔗 Read Article<?php if (isset($row['hasPaywall']) && $row['hasPaywall'] === 'Y'): ?> <span style="color: #ffc107; font-weight: bold;">(paywall)</span><?php endif; ?>
+                                   style="text-decoration: none; display: inline-flex; align-items: center;">
+                                    🔗 Read Article<?php if (isset($row['hasPaywall']) && $row['hasPaywall'] === 'Y'): ?> <span style="color: #fbbf24; font-weight: bold;">(paywall)</span><?php endif; ?>
                                 </a>
                             </div>
                             <div class="article-summary" style="color: #999; font-style: italic;">
@@ -2105,7 +3056,7 @@ if ($last_scrape_time !== 'Never') {
         <!-- Combined Stats & Pagination (Bottom) -->
         <div class="pagination" style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px;">
             <!-- Stats -->
-            <div style="font-size: 14px; color: #666;">
+            <div class="pagination-stats" style="font-size: 14px; color: #666;">
                 Showing <?php echo ($offset + 1); ?>-<?php echo min($offset + $result->num_rows, $total_articles); ?>
                 of <?php echo $total_articles; ?> article<?php echo $total_articles != 1 ? 's' : ''; ?>
                 (Page <?php echo $page; ?> of <?php echo max(1, $total_pages); ?>)
@@ -2113,7 +3064,7 @@ if ($last_scrape_time !== 'Never') {
 
             <!-- Pagination Controls -->
             <?php if ($total_pages > 1): ?>
-            <div style="display: flex; align-items: center; gap: 10px;">
+            <div class="pagination-controls" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
                 <!-- First Page -->
                 <?php if ($page > 1): ?>
                     <a href="<?php echo buildPageUrl(1, $query_params); ?>">«</a>
@@ -2180,10 +3131,10 @@ if ($last_scrape_time !== 'Never') {
                 </form>
 
                 <!-- Expand/Minimize All Buttons -->
-                <button onclick="expandAll()" class="btn" style="background: #28a745; color: white; padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; margin-left: 15px;">
+                <button onclick="expandAll()" class="btn" style="color: white; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; margin-left: 15px;">
                     ▼ Expand All
                 </button>
-                <button onclick="minimizeAll()" class="btn" style="background: #6c757d; color: white; padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px;">
+                <button onclick="minimizeAll()" class="btn btn-secondary" style="color: white; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px;">
                     ▲ Minimize All
                 </button>
             </div>
@@ -2206,10 +3157,23 @@ if ($last_scrape_time !== 'Never') {
         </div>
     </div>
 
+    <!-- Scrape Results Modal -->
+    <div id="scrapeResultsModal" class="modal">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header">
+                <h2>🔄 Scrape Results</h2>
+                <span class="close" onclick="closeScrapeResultsModal()">&times;</span>
+            </div>
+            <div class="modal-body" id="scrapeResultsBody">
+                <!-- Results will be inserted here by JavaScript -->
+            </div>
+        </div>
+    </div>
+
     <!-- Full Text Modal -->
     <div id="fulltextModal" class="modal fulltext-modal">
         <div class="modal-content">
-            <div class="modal-header" style="background: linear-gradient(135deg, #6f42c1 0%, #5a32a3 100%);">
+            <div class="modal-header" style="background: #1e293b;">
                 <h2>📄 Full Article Text</h2>
                 <span class="close" onclick="closeFulltextModal()">&times;</span>
             </div>
@@ -2217,6 +3181,131 @@ if ($last_scrape_time !== 'Never') {
                 <div style="text-align: center; padding: 40px;">
                     <p>Click "Full Text" button to read article</p>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- User Preferences Modal -->
+    <div id="preferencesModal" class="modal">
+        <div class="modal-content" style="max-width: 800px;">
+            <div class="modal-header">
+                <h2>⚙️ User Preferences</h2>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <button onclick="savePreferences()" class="btn btn-success">Save Preferences</button>
+                    <button onclick="closePreferencesModal()" class="btn btn-secondary">Close</button>
+                    <span class="close" onclick="closePreferencesModal()" style="margin-left: 5px;">&times;</span>
+                </div>
+            </div>
+            <div class="modal-body" id="preferencesBody" style="padding: 30px;">
+                <div style="margin-bottom: 30px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <h3 style="margin: 0; color: #333;">Preferred Sources</h3>
+                        <div>
+                            <button onclick="toggleAllSources(true)" class="btn" style="padding: 8px 16px; font-size: 13px;">Select All</button>
+                            <button onclick="toggleAllSources(false)" class="btn btn-secondary" style="padding: 8px 16px; font-size: 13px; margin-left: 10px;">Deselect All</button>
+                        </div>
+                    </div>
+                    <div id="sourcesCheckboxes" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; padding: 15px; background: #f8f9fa; border-radius: 5px;">
+                        <!-- Sources will be loaded here by JavaScript -->
+                    </div>
+                </div>
+
+                <div style="margin-bottom: 30px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <h3 style="margin: 0; color: #333;">Preferred Categories</h3>
+                        <div>
+                            <button onclick="toggleAllCategories(true)" class="btn" style="padding: 8px 16px; font-size: 13px;">Select All</button>
+                            <button onclick="toggleAllCategories(false)" class="btn btn-secondary" style="padding: 8px 16px; font-size: 13px; margin-left: 10px;">Deselect All</button>
+                        </div>
+                    </div>
+                    <div id="categoriesCheckboxes" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; padding: 15px; background: #f8f9fa; border-radius: 5px;">
+                        <!-- Categories will be loaded here by JavaScript -->
+                    </div>
+                </div>
+
+                <div style="margin-bottom: 30px;">
+                    <h3 style="margin: 0 0 15px 0; color: #333;">Default View</h3>
+                    <div style="padding: 15px; background: #f8f9fa; border-radius: 5px;">
+                        <label style="display: block; margin-bottom: 10px; cursor: pointer;">
+                            <input type="radio" name="defaultView" value="all" class="pref-default-view" style="margin-right: 8px; cursor: pointer;">
+                            <span>All Articles (no filter applied)</span>
+                        </label>
+                        <label style="display: block; margin-bottom: 10px; cursor: pointer;">
+                            <input type="radio" name="defaultView" value="tech" class="pref-default-view" style="margin-right: 8px; cursor: pointer;">
+                            <span>Technology</span>
+                        </label>
+                        <label style="display: block; margin-bottom: 10px; cursor: pointer;">
+                            <input type="radio" name="defaultView" value="business" class="pref-default-view" style="margin-right: 8px; cursor: pointer;">
+                            <span>Business</span>
+                        </label>
+                        <label style="display: block; cursor: pointer;">
+                            <input type="radio" name="defaultView" value="sports" class="pref-default-view" style="margin-right: 8px; cursor: pointer;">
+                            <span>Sports</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div style="border-top: 1px solid #e0e0e0; padding-top: 20px; margin-top: 20px;">
+                    <p style="color: #666; font-size: 14px; margin-bottom: 0;">
+                        <strong>Note:</strong> Selected sources and categories will always be applied as base filters. The default view determines what you see when first loading the page.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Source Modal -->
+    <div id="addSourceModal" class="modal">
+        <div class="modal-content" style="max-width: 550px;">
+            <div class="modal-header">
+                <h2>+ Add New Source</h2>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <span id="sourceCountDisplay" style="font-size: 14px; color: #666;"></span>
+                    <span class="close" onclick="closeAddSourceModal()">&times;</span>
+                </div>
+            </div>
+            <div class="modal-body" style="padding: 30px;">
+                <div id="addSourceError" style="display: none; padding: 12px; margin-bottom: 20px; border-radius: 5px; background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb;"></div>
+                <div id="addSourceSuccess" style="display: none; padding: 12px; margin-bottom: 20px; border-radius: 5px; background: #d4edda; color: #155724; border: 1px solid #c3e6cb;"></div>
+
+                <form id="addSourceForm" onsubmit="submitAddSource(event)">
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 600; color: #333;">Source Name <span style="color: #dc3545;">*</span></label>
+                        <input type="text" id="newSourceName" required maxlength="100" placeholder="e.g., TechCrunch"
+                               style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 5px; font-size: 14px;">
+                        <small id="nameError" style="color: #dc3545; display: none; margin-top: 4px;"></small>
+                    </div>
+
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 600; color: #333;">URL <span style="color: #dc3545;">*</span></label>
+                        <input type="url" id="newSourceUrl" required maxlength="500" placeholder="https://example.com/feed"
+                               style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 5px; font-size: 14px;">
+                        <small id="urlError" style="color: #dc3545; display: none; margin-top: 4px;"></small>
+                    </div>
+
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 600; color: #333;">Category <span style="color: #dc3545;">*</span></label>
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                            <label style="cursor: pointer; padding: 8px 16px; background: #e0e0e0; border: 2px solid #ccc; border-radius: 5px; font-weight: 600; transition: all 0.3s;">
+                                <input type="radio" name="newSourceCategory" value="Business" checked style="display: none;">
+                                Business
+                            </label>
+                            <label style="cursor: pointer; padding: 8px 16px; background: #e0e0e0; border: 2px solid #ccc; border-radius: 5px; font-weight: 600; transition: all 0.3s;">
+                                <input type="radio" name="newSourceCategory" value="Technology" style="display: none;">
+                                Technology
+                            </label>
+                            <label style="cursor: pointer; padding: 8px 16px; background: #e0e0e0; border: 2px solid #ccc; border-radius: 5px; font-weight: 600; transition: all 0.3s;">
+                                <input type="radio" name="newSourceCategory" value="Sports" style="display: none;">
+                                Sports
+                            </label>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 10px; justify-content: flex-end; padding-top: 15px; border-top: 1px solid #e0e0e0;">
+                        <button type="button" onclick="closeAddSourceModal()" class="btn btn-secondary" style="padding: 10px 24px;">Cancel</button>
+                        <button type="submit" id="addSourceSubmitBtn" class="btn btn-success" style="padding: 10px 24px;">Add Source</button>
+                    </div>
+                </form>
             </div>
         </div>
     </div>
