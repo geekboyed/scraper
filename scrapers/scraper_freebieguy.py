@@ -15,6 +15,20 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 import hashlib
 import re
 from datetime import datetime
+import logging
+
+# Set up logging
+LOG_DIR = '/var/www/html/scraper/logs'
+os.makedirs(LOG_DIR, exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(LOG_DIR, 'scraper_freebieguy.log')),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 class FreebieGuyScraper:
     def __init__(self):
@@ -41,11 +55,56 @@ class FreebieGuyScraper:
                 cursor = self.connection.cursor()
                 cursor.execute("SET time_zone = '-08:00'")
                 cursor.close()
-                print("✓ Connected to MySQL database")
+                logger.info("Connected to MySQL database")
                 return True
         except Error as e:
-            print(f"✗ Error connecting to MySQL: {e}")
+            logger.error(f"Error connecting to MySQL: {e}")
             return False
+
+    def should_scrape(self):
+        """Check if enough time has passed since last scrape"""
+        try:
+            cursor = self.connection.cursor(dictionary=True)
+            cursor.execute("""
+                SELECT scrape_delay_minutes, last_scraped_at,
+                       TIMESTAMPDIFF(MINUTE, last_scraped_at, NOW()) as minutes_since
+                FROM sources
+                WHERE id = %s
+            """, (self.source_id,))
+            result = cursor.fetchone()
+            cursor.close()
+
+            if not result or not result['last_scraped_at']:
+                return True  # Never scraped before
+
+            delay_minutes = result['scrape_delay_minutes'] or 10
+            minutes_since = result['minutes_since'] or 999999
+
+            if minutes_since < delay_minutes:
+                wait_minutes = delay_minutes - minutes_since
+                logger.info(f"⏳ Rate limit: Wait {wait_minutes} more minutes (delay: {delay_minutes}m)")
+                return False
+
+            return True
+        except Error as e:
+            logger.warning(f"Error checking rate limit: {e}")
+            return True  # Allow scraping if check fails
+
+    def update_source_stats(self):
+        """Update source statistics after scraping"""
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute("""
+                UPDATE sources
+                SET last_scraped = NOW(),
+                    last_scraped_at = NOW()
+                WHERE id = %s
+            """, (self.source_id,))
+            self.connection.commit()
+            cursor.close()
+            logger.info("✓ Updated source statistics")
+        except Error as e:
+            logger.warning(f"Error updating source stats: {e}")
 
     # Category mappings for deal subcategorization
     CATEGORY_KEYWORDS = {
@@ -111,13 +170,13 @@ class FreebieGuyScraper:
         """Scrape deals using Playwright"""
         deals = []
 
-        print(f"\\n{'='*60}")
-        print(f"freebie Guy Scraper (Playwright)")
-        print(f"{'='*60}\\n")
+        logger.info("=" * 60)
+        logger.info("Freebie Guy Scraper starting")
+        logger.info("=" * 60)
 
         try:
             with sync_playwright() as p:
-                print("🌐 Launching browser...")
+                logger.info("Launching browser...")
                 browser = p.chromium.launch(
                     headless=True,
                     args=['--no-sandbox']
@@ -128,29 +187,29 @@ class FreebieGuyScraper:
                     viewport={'width': 1920, 'height': 1080}
                 )
 
-                print(f"📡 Loading {self.deals_url}...")
+                logger.info(f"Loading {self.deals_url}...")
                 page.goto(self.deals_url, wait_until='domcontentloaded', timeout=60000)
 
                 # Wait for content
-                print("⏳ Waiting for deals to render...")
+                logger.info("Waiting for deals to render...")
                 try:
                     page.wait_for_selector('article, .entry, .post', timeout=10000)
                 except:
-                    print("  ⚠ Article selector timeout, continuing...")
+                    logger.warning("Article selector timeout, continuing...")
 
                 page.wait_for_timeout(3000)
 
-                print("🔍 Extracting deals from page...")
+                logger.info("Extracting deals from page...")
 
                 # WordPress typically uses article elements
                 deal_elements = page.query_selector_all('article.entry, article.post')
 
                 if not deal_elements:
-                    print("  ✗ No deal elements found")
+                    logger.warning("No deal elements found")
                     browser.close()
                     return deals
 
-                print(f"\\n📦 Processing {len(deal_elements)} potential deals...\\n")
+                logger.info(f"Processing {len(deal_elements)} potential deals...")
 
                 for idx, element in enumerate(deal_elements[:50], 1):
                     try:
@@ -220,32 +279,35 @@ class FreebieGuyScraper:
 
                         deals.append(deal)
 
-                        print(f"[{idx}] ✓ {title[:60]}...")
-                        if price is not None:
-                            print(f"     💵 {'FREE' if price == 0 else f'${price:.2f}'}")
-                        if discount_pct:
-                            print(f"     💰 {discount_pct}% off")
+                        logger.info(
+                            f"  [{idx}] {title[:60]}... "
+                            f"{'FREE' if price == 0 else f'${price:.2f}' if price is not None else '-'}"
+                            f"{f' ({discount_pct}% off)' if discount_pct else ''}"
+                        )
 
                     except Exception as e:
+                        logger.debug(f"  [{idx}] Error extracting deal: {e}")
                         continue
 
                 browser.close()
 
         except Exception as e:
-            print(f"✗ Scraping error: {e}")
+            logger.error(f"Scraping error: {e}")
             return deals
 
-        print(f"\\n✓ Extracted {len(deals)} deals from freebie Guy\\n")
+        logger.info(f"Extracted {len(deals)} total deals")
         return deals
 
     def save_deals(self, deals):
         """Save deals to database"""
         if not deals:
-            print("No deals to save")
+            logger.info("No deals to save")
             return 0
 
-        print(f"💾 Saving {len(deals)} deals...\\n")
+        logger.info(f"Saving {len(deals)} deals to database...")
         saved = 0
+        duplicates = 0
+        errors = 0
 
         try:
             cursor = self.connection.cursor()
@@ -258,7 +320,7 @@ class FreebieGuyScraper:
                     # Check duplicates
                     cursor.execute("SELECT id FROM deals WHERE content_hash = %s", (content_hash,))
                     if cursor.fetchone():
-                        print(f"[{idx}/{len(deals)}] ⊘ Duplicate")
+                        duplicates += 1
                         continue
 
                     # Insert
@@ -291,31 +353,49 @@ class FreebieGuyScraper:
 
                     self.connection.commit()
                     saved += 1
-                    print(f"[{idx}/{len(deals)}] ✓ Saved")
+
+                    logger.info(
+                        f"  [{idx}/{len(deals)}] Saved: {deal['product_name'][:50]}..."
+                    )
 
                 except Exception as e:
+                    errors += 1
+                    logger.error(f"  [{idx}/{len(deals)}] Error: {str(e)[:80]}")
                     self.connection.rollback()
                     continue
 
             cursor.close()
 
         except Exception as e:
-            print(f"✗ Database error: {e}")
+            logger.error(f"Database error: {e}")
             return saved
 
-        print(f"\\n{'='*60}")
-        print(f"✓ Saved {saved} new deals")
-        print(f"{'='*60}\\n")
+        logger.info("=" * 60)
+        logger.info(f"Saved {saved} new deals")
+        if duplicates > 0:
+            logger.info(f"Skipped {duplicates} duplicates")
+        if errors > 0:
+            logger.warning(f"Encountered {errors} errors")
+        logger.info("=" * 60)
 
         return saved
 
     def run(self):
         """Main execution"""
         if not self.connect_db():
-            return
+            return 0
+
+        # Check rate limiting
+        if not self.should_scrape():
+            if self.connection and self.connection.is_connected():
+                self.connection.close()
+            return 0
 
         deals = self.scrape_deals()
         saved = self.save_deals(deals)
+
+        # Update source statistics
+        self.update_source_stats()
 
         if self.connection and self.connection.is_connected():
             self.connection.close()

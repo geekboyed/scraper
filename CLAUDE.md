@@ -64,8 +64,12 @@ A production web scraping and AI summarization system that collects business new
       PDO::ATTR_EMULATE_PREPARES => false
   ]);
   ```
-- **Read-only operations allowed without authorization**: Any SELECT queries, DESCRIBE, SHOW TABLES, SHOW COLUMNS, EXPLAIN, and other schema inspection commands can be executed freely for debugging and analysis
+- **Read-only operations allowed without confirmation**: All SELECT queries, DESCRIBE, SHOW TABLES, SHOW COLUMNS, SHOW CREATE TABLE, EXPLAIN, and other schema inspection commands can be executed freely for debugging and analysis without asking for permission
 - Test queries before running on production data (applies to INSERT, UPDATE, DELETE, ALTER)
+
+### OS Operations
+- **Read/search operations allowed without confirmation**: All file reading (cat, head, tail, less), searching (grep, find, locate), listing (ls, tree), and inspection commands can be executed freely without asking for permission
+- **Destructive operations require confirmation**: Any commands that modify, delete, or move files (rm, mv, cp with overwrite) should be confirmed first
 
 ### AI API Configuration
 - **Primary**: 1min.ai (GPT-4o-mini) via MINAI_API_KEY

@@ -47,6 +47,51 @@ class TechBargainsScraper:
             print(f"✗ Error connecting to MySQL: {e}")
             return False
 
+    def should_scrape(self):
+        """Check if enough time has passed since last scrape"""
+        try:
+            cursor = self.connection.cursor(dictionary=True)
+            cursor.execute("""
+                SELECT scrape_delay_minutes, last_scraped_at,
+                       TIMESTAMPDIFF(MINUTE, last_scraped_at, NOW()) as minutes_since
+                FROM sources
+                WHERE id = %s
+            """, (self.source_id,))
+            result = cursor.fetchone()
+            cursor.close()
+
+            if not result or not result['last_scraped_at']:
+                return True  # Never scraped before
+
+            delay_minutes = result['scrape_delay_minutes'] or 10
+            minutes_since = result['minutes_since'] or 999999
+
+            if minutes_since < delay_minutes:
+                wait_minutes = delay_minutes - minutes_since
+                print(f"⏳ Rate limit: Wait {wait_minutes} more minutes (delay: {delay_minutes}m)")
+                return False
+
+            return True
+        except Error as e:
+            print(f"⚠ Error checking rate limit: {e}")
+            return True  # Allow scraping if check fails
+
+    def update_source_stats(self):
+        """Update source statistics after scraping"""
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute("""
+                UPDATE sources
+                SET last_scraped = NOW(),
+                    last_scraped_at = NOW()
+                WHERE id = %s
+            """, (self.source_id,))
+            self.connection.commit()
+            cursor.close()
+            print("✓ Updated source statistics")
+        except Error as e:
+            print(f"⚠ Error updating source stats: {e}")
+
     # Category mappings - Tech Bargains is primarily electronics
     CATEGORY_KEYWORDS = {
         50: [  # Electronics - primary category for this site
@@ -335,10 +380,19 @@ class TechBargainsScraper:
     def run(self):
         """Main execution"""
         if not self.connect_db():
-            return
+            return 0
+
+        # Check rate limiting
+        if not self.should_scrape():
+            if self.connection and self.connection.is_connected():
+                self.connection.close()
+            return 0
 
         deals = self.scrape_deals()
         saved = self.save_deals(deals)
+
+        # Update source statistics
+        self.update_source_stats()
 
         if self.connection and self.connection.is_connected():
             self.connection.close()

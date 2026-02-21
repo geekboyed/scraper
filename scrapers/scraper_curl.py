@@ -110,6 +110,40 @@ class CurlScraper:
 
         return any(re.search(pattern, href) for pattern in article_patterns)
 
+    def clean_cnn_video_title(self, title, url):
+        """
+        Clean CNN video titles:
+        - Remove 'Video' prefix
+        - Remove time stamps (e.g., '3:33', '1:10')
+        - Remove ' CNN' suffix
+        - Add '(video)' suffix
+        """
+        if 'cnn.com' not in url.lower():
+            return title
+
+        # Check if this is a video title (starts with "Video" or has timestamp)
+        is_video = title.startswith('Video') or re.search(r'\d+:\d+', title)
+
+        if not is_video:
+            return title
+
+        # Remove "Video" prefix
+        cleaned = re.sub(r'^Video\s*', '', title)
+
+        # Remove time stamps (e.g., "3:33", "1:10:45", etc.)
+        cleaned = re.sub(r'\s*\d+:\d+(?::\d+)?\s*', '', cleaned)
+
+        # Remove " CNN" suffix
+        cleaned = re.sub(r'\s+CNN\s*$', '', cleaned)
+
+        # Clean up extra whitespace
+        cleaned = ' '.join(cleaned.split())
+
+        # Add (video) suffix
+        cleaned = f"{cleaned} (video)"
+
+        return cleaned
+
     def scrape_rss_feed(self, rss_url):
         """Scrape RSS/Atom feed (for sources like The Verge)"""
         try:
@@ -280,6 +314,12 @@ class CurlScraper:
     def save_article(self, article_data):
         """Save article to database"""
         try:
+            # Clean CNN video titles
+            article_data['title'] = self.clean_cnn_video_title(
+                article_data['title'],
+                article_data['url']
+            )
+
             cursor = self.connection.cursor()
 
             # Check for duplicates by URL or title within 24 hours
@@ -327,20 +367,53 @@ class CurlScraper:
             return 'error'
 
     def get_enabled_sources(self):
-        """Get enabled sources"""
+        """Get enabled sources with rate limiting info"""
         cursor = self.connection.cursor(dictionary=True)
-        cursor.execute("SELECT id, name, url FROM sources WHERE isActive = 'Y'")
+        cursor.execute("""
+            SELECT id, name, url, scrape_delay_minutes, last_scraped_at
+            FROM sources
+            WHERE isActive = 'Y'
+        """)
         sources = cursor.fetchall()
         cursor.close()
         return sources
 
+    def should_scrape_source(self, source):
+        """Check if enough time has passed since last scrape"""
+        if not source.get('last_scraped_at'):
+            return True  # Never scraped before
+
+        delay_minutes = source.get('scrape_delay_minutes', 10)
+
+        cursor = self.connection.cursor()
+        cursor.execute("""
+            SELECT TIMESTAMPDIFF(MINUTE, last_scraped_at, NOW()) as minutes_since
+            FROM sources
+            WHERE id = %s
+        """, (source['id'],))
+        result = cursor.fetchone()
+        cursor.close()
+
+        if not result:
+            return True
+
+        minutes_since = result[0] if result[0] is not None else 999999
+
+        if minutes_since < delay_minutes:
+            wait_minutes = delay_minutes - minutes_since
+            print(f"  ⏳ Rate limit: Wait {wait_minutes} more minutes (delay: {delay_minutes}m)")
+            return False
+
+        return True
+
     def update_source_stats(self, source_id):
-        """Update source statistics"""
+        """Update source statistics and timestamp"""
         try:
             cursor = self.connection.cursor()
             cursor.execute("""
                 UPDATE sources
                 SET last_scraped = NOW(),
+                    last_scraped_at = NOW(),
                     articles_count = (SELECT COUNT(*) FROM articles WHERE source_id = %s)
                 WHERE id = %s
             """, (source_id, source_id))
@@ -372,6 +445,10 @@ class CurlScraper:
             print(f"\n{'=' * 60}")
             print(f"Source: {source['name']}")
             print(f"{'=' * 60}")
+
+            # Check rate limiting
+            if not self.should_scrape_source(source):
+                continue
 
             self.source_id = source['id']
             self.base_url = source['url']
