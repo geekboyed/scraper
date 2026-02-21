@@ -49,28 +49,24 @@ try {
 
             // Check for duplicate name
             $stmt = $conn->prepare("SELECT id FROM categories WHERE name = ? AND level = ?");
-            $stmt->bind_param('si', $name, $level);
-            $stmt->execute();
-            if ($stmt->get_result()->num_rows > 0) {
+            $stmt->execute([$name, $level]);
+            if ($stmt->fetch()) {
                 throw new Exception('A category with this name already exists at this level');
             }
-            $stmt->close();
 
             // Insert new category
             $stmt = $conn->prepare("INSERT INTO categories (name, description, level, parentID) VALUES (?, ?, ?, ?)");
-            $stmt->bind_param('ssii', $name, $description, $level, $parentID);
 
-            if ($stmt->execute()) {
-                $newId = $conn->insert_id;
+            if ($stmt->execute([$name, $description, $level, $parentID])) {
+                $newId = $conn->lastInsertId();
                 echo json_encode([
                     'success' => true,
                     'message' => 'Category added successfully',
                     'id' => $newId
                 ]);
             } else {
-                throw new Exception('Failed to insert category: ' . $conn->error);
+                throw new Exception('Failed to insert category');
             }
-            $stmt->close();
             break;
 
         case 'update':
@@ -99,21 +95,17 @@ try {
 
             // Check if category exists
             $stmt = $conn->prepare("SELECT id FROM categories WHERE id = ?");
-            $stmt->bind_param('i', $id);
-            $stmt->execute();
-            if ($stmt->get_result()->num_rows === 0) {
+            $stmt->execute([$id]);
+            if (!$stmt->fetch()) {
                 throw new Exception('Category not found');
             }
-            $stmt->close();
 
             // Check for duplicate name (excluding current category)
             $stmt = $conn->prepare("SELECT id FROM categories WHERE name = ? AND level = ? AND id != ?");
-            $stmt->bind_param('sii', $name, $level, $id);
-            $stmt->execute();
-            if ($stmt->get_result()->num_rows > 0) {
+            $stmt->execute([$name, $level, $id]);
+            if ($stmt->fetch()) {
                 throw new Exception('A category with this name already exists at this level');
             }
-            $stmt->close();
 
             // Prevent circular reference
             if ($parentID === $id) {
@@ -122,17 +114,15 @@ try {
 
             // Update category
             $stmt = $conn->prepare("UPDATE categories SET name = ?, description = ?, level = ?, parentID = ? WHERE id = ?");
-            $stmt->bind_param('ssiii', $name, $description, $level, $parentID, $id);
 
-            if ($stmt->execute()) {
+            if ($stmt->execute([$name, $description, $level, $parentID, $id])) {
                 echo json_encode([
                     'success' => true,
                     'message' => 'Category updated successfully'
                 ]);
             } else {
-                throw new Exception('Failed to update category: ' . $conn->error);
+                throw new Exception('Failed to update category');
             }
-            $stmt->close();
             break;
 
         case 'delete':
@@ -145,21 +135,16 @@ try {
 
             // Check if category exists
             $stmt = $conn->prepare("SELECT name, level FROM categories WHERE id = ?");
-            $stmt->bind_param('i', $id);
-            $stmt->execute();
-            $result = $stmt->get_result();
-            if ($result->num_rows === 0) {
+            $stmt->execute([$id]);
+            $category = $stmt->fetch();
+            if (!$category) {
                 throw new Exception('Category not found');
             }
-            $category = $result->fetch_assoc();
-            $stmt->close();
 
             // Check if category has articles
             $stmt = $conn->prepare("SELECT COUNT(*) as count FROM article_categories WHERE category_id = ?");
-            $stmt->bind_param('i', $id);
-            $stmt->execute();
-            $articleCount = $stmt->get_result()->fetch_assoc()['count'];
-            $stmt->close();
+            $stmt->execute([$id]);
+            $articleCount = $stmt->fetch()['count'];
 
             if ($articleCount > 0) {
                 throw new Exception("Cannot delete category '{$category['name']}': it has {$articleCount} associated articles. Please reassign the articles first.");
@@ -167,16 +152,13 @@ try {
 
             // Check if it has children (will be handled by CASCADE, but warn user)
             $stmt = $conn->prepare("SELECT COUNT(*) as count FROM categories WHERE parentID = ?");
-            $stmt->bind_param('i', $id);
-            $stmt->execute();
-            $childCount = $stmt->get_result()->fetch_assoc()['count'];
-            $stmt->close();
+            $stmt->execute([$id]);
+            $childCount = $stmt->fetch()['count'];
 
             // Delete category (CASCADE will delete children if any)
             $stmt = $conn->prepare("DELETE FROM categories WHERE id = ?");
-            $stmt->bind_param('i', $id);
 
-            if ($stmt->execute()) {
+            if ($stmt->execute([$id])) {
                 $message = $childCount > 0
                     ? "Category deleted successfully (including {$childCount} subcategories)"
                     : 'Category deleted successfully';
@@ -186,9 +168,8 @@ try {
                     'message' => $message
                 ]);
             } else {
-                throw new Exception('Failed to delete category: ' . $conn->error);
+                throw new Exception('Failed to delete category');
             }
-            $stmt->close();
             break;
 
         default:
@@ -201,5 +182,5 @@ try {
     ]);
 }
 
-$conn->close();
+$conn = null;
 ?>

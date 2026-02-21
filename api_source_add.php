@@ -117,10 +117,8 @@ if (!$isAdmin) {
 
 // Check if URL already exists in sources table
 $stmt = $conn->prepare("SELECT id, name, isBase, isActive FROM sources WHERE url = ?");
-$stmt->bind_param("s", $url);
-$stmt->execute();
-$existing = $stmt->get_result()->fetch_assoc();
-$stmt->close();
+$stmt->execute([$url]);
+$existing = $stmt->fetch();
 
 try {
     if ($existing) {
@@ -130,39 +128,29 @@ try {
         // If the source is inactive, reactivate it
         if ($existing['isActive'] === 'N') {
             $reactivate = $conn->prepare("UPDATE sources SET isActive = 'Y', name = ? WHERE id = ?");
-            $reactivate->bind_param("si", $name, $sourceId);
-            $reactivate->execute();
-            $reactivate->close();
+            $reactivate->execute([$name, $sourceId]);
 
             // For non-admin users, ensure the user-source relationship exists
             if (!$isAdmin) {
                 $checkRel = $conn->prepare("SELECT id FROM users_sources WHERE user_id = ? AND source_id = ?");
-                $checkRel->bind_param("ii", $userId, $sourceId);
-                $checkRel->execute();
-                $hasRel = $checkRel->get_result()->fetch_assoc();
-                $checkRel->close();
+                $checkRel->execute([$userId, $sourceId]);
+                $hasRel = $checkRel->fetch();
 
                 if (!$hasRel) {
                     $rel = $conn->prepare("INSERT INTO users_sources (user_id, source_id) VALUES (?, ?)");
-                    $rel->bind_param("ii", $userId, $sourceId);
-                    $rel->execute();
-                    $rel->close();
+                    $rel->execute([$userId, $sourceId]);
 
                     $update = $conn->prepare("UPDATE users SET sourceCount = GREATEST(sourceCount - 1, 0) WHERE id = ?");
-                    $update->bind_param("i", $userId);
-                    $update->execute();
-                    $update->close();
+                    $update->execute([$userId]);
                 }
             }
 
             $fetch = $conn->prepare("SELECT id, name, url, mainCategory, scrape_frequency, isActive, created_at FROM sources WHERE id = ?");
-            $fetch->bind_param("i", $sourceId);
-            $fetch->execute();
-            $source = $fetch->get_result()->fetch_assoc();
-            $fetch->close();
+            $fetch->execute([$sourceId]);
+            $source = $fetch->fetch();
 
             echo json_encode(['success' => true, 'source' => $source, 'reactivated' => true]);
-            $conn->close();
+            $conn = null;
             exit;
         }
 
@@ -170,85 +158,67 @@ try {
             if ($existing['isBase'] == 'Y') {
                 // Already a base source, nothing to do
                 echo json_encode(['success' => false, 'error' => 'This is already a base source: ' . $existing['name']]);
-                $conn->close();
+                $conn = null;
                 exit;
             }
 
             // Promote user source to base source: set isBase='Y', remove users_sources entries
             $promote = $conn->prepare("UPDATE sources SET isBase = 'Y' WHERE id = ?");
-            $promote->bind_param("i", $sourceId);
-            $promote->execute();
-            $promote->close();
+            $promote->execute([$sourceId]);
 
             // Remove all users_sources entries (source is now public to everyone)
             // Refund sourceCount to users who had this source
             $refund = $conn->prepare("SELECT user_id FROM users_sources WHERE source_id = ?");
-            $refund->bind_param("i", $sourceId);
-            $refund->execute();
-            $usersToRefund = $refund->get_result();
-            while ($row = $usersToRefund->fetch_assoc()) {
+            $refund->execute([$sourceId]);
+            $usersToRefund = $refund->fetchAll();
+            foreach ($usersToRefund as $row) {
                 $inc = $conn->prepare("UPDATE users SET sourceCount = sourceCount + 1 WHERE id = ?");
-                $inc->bind_param("i", $row['user_id']);
-                $inc->execute();
-                $inc->close();
+                $inc->execute([$row['user_id']]);
             }
-            $refund->close();
 
             $del = $conn->prepare("DELETE FROM users_sources WHERE source_id = ?");
-            $del->bind_param("i", $sourceId);
-            $del->execute();
-            $del->close();
+            $del->execute([$sourceId]);
 
             // Fetch the promoted source
             $fetch = $conn->prepare("SELECT id, name, url, mainCategory, scrape_frequency, isActive, created_at FROM sources WHERE id = ?");
-            $fetch->bind_param("i", $sourceId);
-            $fetch->execute();
-            $source = $fetch->get_result()->fetch_assoc();
-            $fetch->close();
+            $fetch->execute([$sourceId]);
+            $source = $fetch->fetch();
 
             echo json_encode(['success' => true, 'source' => $source, 'promoted' => true]);
-            $conn->close();
+            $conn = null;
             exit;
         }
 
         // Base sources are already visible to all users -- don't waste a source slot
         if ($existing['isBase'] == 'Y') {
             echo json_encode(['success' => false, 'error' => 'This source is already available to all users as a base source']);
-            $conn->close();
+            $conn = null;
             exit;
         }
 
         // Check if user already has this source
         $stmt = $conn->prepare("SELECT id FROM users_sources WHERE user_id = ? AND source_id = ?");
-        $stmt->bind_param("ii", $userId, $sourceId);
-        $stmt->execute();
-        $hasSource = $stmt->get_result()->fetch_assoc();
-        $stmt->close();
+        $stmt->execute([$userId, $sourceId]);
+        $hasSource = $stmt->fetch();
 
         if ($hasSource) {
             echo json_encode(['success' => false, 'error' => 'You already have this source: ' . $existing['name']]);
-            $conn->close();
+            $conn = null;
             exit;
         }
 
         // Add relationship for this user
         $stmt = $conn->prepare("INSERT INTO users_sources (user_id, source_id) VALUES (?, ?)");
-        $stmt->bind_param("ii", $userId, $sourceId);
-        $stmt->execute();
-        $stmt->close();
+        $stmt->execute([$userId, $sourceId]);
 
         // Decrement sourceCount for non-admin users
         $update = $conn->prepare("UPDATE users SET sourceCount = GREATEST(sourceCount - 1, 0) WHERE id = ?");
-        $update->bind_param("i", $userId);
-        $update->execute();
-        $update->close();
+        $update->execute([$userId]);
 
         // Fetch the source
         $fetch = $conn->prepare("SELECT id, name, url, mainCategory, scrape_frequency, isActive, created_at FROM sources WHERE id = ?");
-        $fetch->bind_param("i", $sourceId);
-        $fetch->execute();
-        $source = $fetch->get_result()->fetch_assoc();
-        $fetch->close();
+        $fetch->execute([$sourceId]);
+        $source = $fetch->fetch();
 
         echo json_encode(['success' => true, 'source' => $source, 'shared' => true]);
     } else {
@@ -256,38 +226,30 @@ try {
         // Admin sources: isBase='Y' (public), User sources: isBase='N' (private)
         $isBase = $isAdmin ? 'Y' : 'N';
         $stmt = $conn->prepare("INSERT INTO sources (name, url, mainCategory, scrape_frequency, isBase, isActive) VALUES (?, ?, ?, ?, ?, 'Y')");
-        $stmt->bind_param("sssss", $name, $url, $mainCategory, $scrape_frequency, $isBase);
 
-        if ($stmt->execute()) {
-            $newSourceId = $conn->insert_id;
-            $stmt->close();
+        if ($stmt->execute([$name, $url, $mainCategory, $scrape_frequency, $isBase])) {
+            $newSourceId = $conn->lastInsertId();
 
             // For non-admin users, create relationship and decrement sourceCount
             if (!$isAdmin) {
                 $rel = $conn->prepare("INSERT INTO users_sources (user_id, source_id) VALUES (?, ?)");
-                $rel->bind_param("ii", $userId, $newSourceId);
-                $rel->execute();
-                $rel->close();
+                $rel->execute([$userId, $newSourceId]);
 
                 $update = $conn->prepare("UPDATE users SET sourceCount = GREATEST(sourceCount - 1, 0) WHERE id = ?");
-                $update->bind_param("i", $userId);
-                $update->execute();
-                $update->close();
+                $update->execute([$userId]);
             }
 
             // Fetch the created source
             $fetch = $conn->prepare("SELECT id, name, url, mainCategory, scrape_frequency, isActive, created_at FROM sources WHERE id = ?");
-            $fetch->bind_param("i", $newSourceId);
-            $fetch->execute();
-            $source = $fetch->get_result()->fetch_assoc();
-            $fetch->close();
+            $fetch->execute([$newSourceId]);
+            $source = $fetch->fetch();
 
             echo json_encode(['success' => true, 'source' => $source]);
         } else {
             echo json_encode(['success' => false, 'error' => 'Failed to add source']);
         }
     }
-} catch (mysqli_sql_exception $e) {
+} catch (PDOException $e) {
     error_log("api_source_add.php error: " . $e->getMessage());
     if (strpos($e->getMessage(), 'Duplicate entry') !== false) {
         echo json_encode(['success' => false, 'error' => 'A source with this URL already exists']);
@@ -296,4 +258,4 @@ try {
     }
 }
 
-$conn->close();
+$conn = null;

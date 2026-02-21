@@ -34,24 +34,20 @@ if ($categoryId <= 0) {
 
 // Validate that the category exists and is level 1
 $stmt = $conn->prepare("SELECT id, name FROM categories WHERE id = ? AND level = 1");
-$stmt->bind_param('i', $categoryId);
-$stmt->execute();
-$result = $stmt->get_result();
+$stmt->execute([$categoryId]);
+$category = $stmt->fetch();
 
-if ($result->num_rows === 0) {
+if (!$category) {
     header('Content-Type: application/json');
     echo json_encode([
         'success' => false,
         'error' => 'Category not found or not a level 1 category'
     ]);
-    $stmt->close();
-    $conn->close();
+    $conn = null;
     exit;
 }
 
-$category = $result->fetch_assoc();
-$stmt->close();
-$conn->close();
+$conn = null;
 
 // Set up Server-Sent Events
 header('Content-Type: text/event-stream');

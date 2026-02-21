@@ -44,15 +44,12 @@ if (isset($_POST['code']) && !empty(trim($_POST['code']))) {
 
     // Check if code already exists
     $check = $conn->prepare("SELECT id FROM invite_codes WHERE code = ?");
-    $check->bind_param("s", $code);
-    $check->execute();
-    if ($check->get_result()->num_rows > 0) {
+    $check->execute([$code]);
+    if ($check->fetch()) {
         http_response_code(409);
         echo json_encode(['error' => 'This code already exists. Please choose a different code.']);
-        $check->close();
         exit;
     }
-    $check->close();
 } else {
     // Generate a random 32-character hex code
     $code = bin2hex(random_bytes(16));
@@ -66,9 +63,8 @@ if ($max_uses < 1) {
 
 // Insert into database
 $stmt = $conn->prepare("INSERT INTO invite_codes (code, created_by, max_uses) VALUES (?, ?, ?)");
-$stmt->bind_param("sii", $code, $current_user['id'], $max_uses);
 
-if ($stmt->execute()) {
+if ($stmt->execute([$code, $current_user['id'], $max_uses])) {
     echo json_encode([
         'success' => true,
         'code' => $code,
@@ -80,6 +76,5 @@ if ($stmt->execute()) {
     echo json_encode(['error' => 'Failed to create invite code']);
 }
 
-$stmt->close();
-$conn->close();
+$conn = null;
 ?>

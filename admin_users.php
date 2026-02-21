@@ -18,7 +18,7 @@ $users_result = $conn->query("SELECT id, username, email, isAdmin, isActive, cre
 $users = [];
 $admin_count = 0;
 $active_count = 0;
-while ($row = $users_result->fetch_assoc()) {
+while ($row = $users_result->fetch()) {
     $users[] = $row;
     if ($row['isAdmin'] == 'Y') $admin_count++;
     if ($row['isActive'] == 'Y') $active_count++;
@@ -835,4 +835,4 @@ $total_count = count($users);
     </div>
 </body>
 </html>
-<?php $conn->close(); ?>
+<?php $conn = null; ?>

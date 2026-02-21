@@ -16,11 +16,10 @@ if (isset($_COOKIE['user_session'])) {
     $user_id = (int)$_COOKIE['user_session'];
     if ($user_id > 0) {
         $stmt = $conn->prepare("SELECT id, username, email, isAdmin, sourceCount, isActive, created_at, last_login, last_activity, session_count, total_hours, current_session_start, preferenceJSON FROM users WHERE id = ? AND isActive = 'Y'");
-        $stmt->bind_param('i', $user_id);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        if ($result->num_rows === 1) {
-            $current_user = $result->fetch_assoc();
+        $stmt->execute([$user_id]);
+        $current_user = $stmt->fetch();
+
+        if ($current_user) {
 
             // Track usage - 4-hour session blocks
             $now = new DateTime();
@@ -42,28 +41,21 @@ if (isset($_COOKIE['user_session'])) {
             if ($is_new_session) {
                 // Start new session
                 $update_stmt = $conn->prepare("UPDATE users SET session_count = session_count + 1, current_session_start = NOW(), last_activity = NOW() WHERE id = ?");
-                $update_stmt->bind_param('i', $user_id);
-                $update_stmt->execute();
-                $update_stmt->close();
+                $update_stmt->execute([$user_id]);
             } else {
                 // Continue existing session - calculate hours since session start
                 if ($session_start) {
                     $hours_this_session = ($now->getTimestamp() - $session_start->getTimestamp()) / 3600;
                     // Update total hours and last activity
                     $update_stmt = $conn->prepare("UPDATE users SET total_hours = ?, last_activity = NOW() WHERE id = ?");
-                    $update_stmt->bind_param('di', $hours_this_session, $user_id);
-                    $update_stmt->execute();
-                    $update_stmt->close();
+                    $update_stmt->execute([$hours_this_session, $user_id]);
                 } else {
                     // Just update last activity
                     $update_stmt = $conn->prepare("UPDATE users SET last_activity = NOW() WHERE id = ?");
-                    $update_stmt->bind_param('i', $user_id);
-                    $update_stmt->execute();
-                    $update_stmt->close();
+                    $update_stmt->execute([$user_id]);
                 }
             }
         }
-        $stmt->close();
     }
 }
 ?>

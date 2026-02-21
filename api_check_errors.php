@@ -207,7 +207,7 @@ foreach ($log_files as $log_file) {
 require_once 'config.php';
 
 if (isset($conn)) {
-    $result = $conn->query("
+    $stmt = $conn->query("
         SELECT a.id, a.title, s.name as source_name, a.scraped_at, a.summary_retry_count
         FROM articles a
         LEFT JOIN sources s ON a.source_id = s.id
@@ -217,8 +217,8 @@ if (isset($conn)) {
         LIMIT 50
     ");
 
-    if ($result) {
-        while ($article = $result->fetch_assoc()) {
+    if ($stmt) {
+        while ($article = $stmt->fetch()) {
             $retry_count = $article['summary_retry_count'] ?? 0;
             $retry_text = $retry_count > 0 ? " (Retry #$retry_count)" : " (No retries yet)";
 
@@ -234,7 +234,6 @@ if (isset($conn)) {
                 'retry_text' => $retry_text
             ];
         }
-        $result->free();
     }
 }
 

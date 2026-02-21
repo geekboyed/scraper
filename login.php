@@ -18,18 +18,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } else {
         // Look up user by username or email
         $stmt = $conn->prepare("SELECT id, username, email, isActive FROM users WHERE (username = ? OR email = ?) AND isActive = 'Y'");
-        $stmt->bind_param('ss', $identifier, $identifier);
-        $stmt->execute();
-        $result = $stmt->get_result();
+        $stmt->execute([$identifier, $identifier]);
+        $user = $stmt->fetch();
 
-        if ($result->num_rows === 1) {
-            $user = $result->fetch_assoc();
-
+        if ($user) {
             // Update last_login timestamp
             $update_stmt = $conn->prepare("UPDATE users SET last_login = NOW() WHERE id = ?");
-            $update_stmt->bind_param('i', $user['id']);
-            $update_stmt->execute();
-            $update_stmt->close();
+            $update_stmt->execute([$user['id']]);
 
             // Set cookie with no expiration (session cookie persists until browser close,
             // but we set a far-future expiry so it persists)
@@ -45,7 +40,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             $error = 'No active account found with that username or email.';
         }
-        $stmt->close();
     }
 }
 ?>

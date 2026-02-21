@@ -112,7 +112,7 @@ class ParallelSummarizer:
         """Get articles that need summaries, including failed articles eligible for retry with exponential backoff"""
         cursor = self.connection.cursor(dictionary=True)
         cursor.execute("""
-            SELECT a.id, a.title, a.url, a.fullArticle, a.summary_retry_count, s.mainCategory
+            SELECT a.id, a.title, a.url, a.fullArticle, a.summary_retry_count, s.mainCategory, s.name as source_name
             FROM articles a
             LEFT JOIN sources s ON a.source_id = s.id
             WHERE (a.summary IS NULL OR a.summary = '')
@@ -987,12 +987,14 @@ Return ONLY the category names separated by commas (1-3 categories, exact names 
         except Error as e:
             return False
 
-    def process_article(self, article):
+    def process_article(self, article, counter=""):
         """Process a single article"""
         try:
             retry_count = article.get('summary_retry_count', 0)
             retry_note = f" (retry {retry_count})" if retry_count > 0 else ""
-            print(f"Processing: {article['title'][:60]}...{retry_note}")
+            source_name = article.get('source_name', 'Unknown')
+            counter_str = f"[{counter}] " if counter else ""
+            print(f"{counter_str}[{source_name}] {article['title'][:50]}...{retry_note}")
 
             # Start with existing fullArticle if available
             has_existing = article.get('fullArticle') and len(article['fullArticle']) > 200
@@ -1067,9 +1069,10 @@ Return ONLY the category names separated by commas (1-3 categories, exact names 
 
         successful = 0
         start_time = time.time()
+        total_articles = len(articles)
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(self.process_article, article): article for article in articles}
+            futures = {executor.submit(self.process_article, article, f"{i+1}/{total_articles}"): article for i, article in enumerate(articles)}
 
             for future in as_completed(futures):
                 if future.result():

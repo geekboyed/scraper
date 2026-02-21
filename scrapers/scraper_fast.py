@@ -152,7 +152,7 @@ class FastScraper:
                     continue
 
                 href = link.get('href', '')
-                title = heading.get_text(strip=True)
+                title = link.get_text(separator=' ', strip=True)
                 checked += 1
 
                 # Skip if no title or too short
@@ -211,7 +211,7 @@ class FastScraper:
                         break
 
                     href = link.get('href', '')
-                    title = link.get_text(strip=True)
+                    title = link.get_text(separator=' ', strip=True)
 
                     # Must have good title
                     if not title or len(title) < 30 or len(title) > 200:
@@ -366,7 +366,6 @@ class FastScraper:
                     print(f"[{i}/{len(articles)}] ✓ {article['title'][:80]}...")
                     saved += 1
                 elif result == 'skipped':
-                    print(f"[{i}/{len(articles)}] ⊘ {article['title'][:80]}... (duplicate)")
                     skipped += 1
 
             total_saved += saved

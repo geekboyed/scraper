@@ -109,7 +109,7 @@ class BusinessInsiderScraper:
                         url = href
 
                     # Get title from link text or nearby heading
-                    title = link.get_text(strip=True)
+                    title = link.get_text(separator=' ', strip=True)
 
                     # Skip if no title or duplicate URL
                     if not title or len(title) < 10 or url in seen_urls:

@@ -39,12 +39,14 @@ $categories_grouped = get_categories_grouped($conn);
 
 // Map level 1 category names to URL parameter slugs and icons
 $category_slug_map = [
+    'Deals' => 'deals',
     'Business' => 'business',
     'Technology' => 'tech',
     'Sports' => 'sports',
     'General' => 'general'
 ];
 $category_icon_map = [
+    'Deals' => '🏷️',
     'Business' => '💼',
     'Technology' => '🖥️',
     'Sports' => '⚽',
@@ -61,11 +63,11 @@ $page_size = isset($_GET['size']) ? (int)$_GET['size'] : 50;
 
 // Apply default view if no explicit filter is set in URL
 $has_explicit_filter = !empty($category_filter) || !empty($source_filter) ||
-                       isset($_GET['tech']) || isset($_GET['business']) || isset($_GET['sports']) || isset($_GET['general']);
+                       isset($_GET['deals']) || isset($_GET['tech']) || isset($_GET['business']) || isset($_GET['sports']) || isset($_GET['general']);
 
 if (!$has_explicit_filter && $default_view !== 'all') {
     // Auto-redirect to apply default view - supports dynamic parent category names
-    $valid_views = ['tech', 'business', 'sports', 'general'];
+    $valid_views = ['deals', 'tech', 'business', 'sports', 'general'];
     if (in_array($default_view, $valid_views)) {
         $redirect_url = 'index.php?' . urlencode($default_view) . '=1';
         if ($date_filter !== '1day') {
@@ -88,9 +90,9 @@ $query = "SELECT a.id, a.title, a.url, a.published_date, a.summary, a.scraped_at
 
 $where = [];
 $params = [];
-$types = '';
 
 // Parent category filter flags (used in template for hidden form fields)
+$deals_filter = isset($_GET['deals']) && $_GET['deals'] == '1';
 $tech_filter = isset($_GET['tech']) && $_GET['tech'] == '1';
 $business_filter = isset($_GET['business']) && $_GET['business'] == '1';
 $sports_filter = isset($_GET['sports']) && $_GET['sports'] == '1';
@@ -98,6 +100,7 @@ $general_filter = isset($_GET['general']) && $_GET['general'] == '1';
 
 // Map URL parameter names to parent category names
 $parent_filter_map = [
+    'deals' => 'Deals',
     'tech' => 'Technology',
     'business' => 'Business',
     'sports' => 'Sports',
@@ -113,6 +116,120 @@ foreach ($parent_filter_map as $param => $parent_name) {
     }
 }
 
+// DEALS MODE: If deals filter is active, query deals table instead of articles
+if ($deals_filter) {
+    // Build deals query with proper aggregation to prevent duplicates
+    $query = "SELECT MAX(d.id) as id, d.product_name as title, d.deal_url as url,
+              MAX(d.posted_at) as published_date,
+              MAX(d.description) as summary, MAX(d.scraped_at) as scraped_at,
+              MAX(d.price) as price, MAX(d.price_text) as price_text,
+              MAX(d.original_price) as original_price,
+              MAX(d.discount_percentage) as discount_percentage,
+              MAX(d.store_name) as store_name, MAX(d.image_url) as image_url,
+              MAX(d.votes_up) as votes_up, MAX(d.votes_down) as votes_down,
+              MAX(d.comments_count) as comments_count, MAX(d.deal_type) as deal_type,
+              MAX(d.category) as category, MAX(d.category) as categories,
+              MAX(d.coupon_code) as coupon_code, MAX(d.expires_at) as expires_at,
+              MAX(s.name) as source_name, MAX(s.id) as source_id
+              FROM deals d
+              LEFT JOIN sources s ON d.source_id = s.id";
+
+    $where = [];
+    $params = [];
+
+    // Only show active deals that haven't expired
+    $where[] = "d.is_active = 'Y'";
+    $where[] = "(d.expires_at IS NULL OR d.expires_at > NOW())";
+
+    // Only show deals with actual prices (filter out cashback-only deals)
+    $where[] = "(d.price IS NOT NULL OR d.price_text IS NOT NULL)";
+
+    // Search filter
+    if ($search) {
+        $where[] = "(d.product_name LIKE ? OR d.description LIKE ? OR d.store_name LIKE ?)";
+        $search_param = "%{$search}%";
+        $params[] = $search_param;
+        $params[] = $search_param;
+        $params[] = $search_param;
+    }
+
+    // Date filter
+    if ($date_filter && $date_filter !== 'all') {
+        switch ($date_filter) {
+            case '1day':
+                $where[] = "d.scraped_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)";
+                break;
+            case '1week':
+                $where[] = "d.scraped_at >= DATE_SUB(NOW(), INTERVAL 1 WEEK)";
+                break;
+            case '1month':
+                $where[] = "d.scraped_at >= DATE_SUB(NOW(), INTERVAL 1 MONTH)";
+                break;
+        }
+    }
+
+    // Source filter
+    if (!empty($source_filter)) {
+        $placeholders = implode(',', array_fill(0, count($source_filter), '?'));
+        $where[] = "d.source_id IN ($placeholders)";
+        foreach ($source_filter as $src_id) {
+            $params[] = $src_id;
+        }
+    }
+
+    if (!empty($where)) {
+        $query .= " WHERE " . implode(" AND ", $where);
+    }
+
+    // Group by product_name and deal_url to eliminate duplicates
+    $query .= " GROUP BY d.product_name, d.deal_url";
+
+    // Get total count for pagination
+    $count_query = "SELECT COUNT(DISTINCT d.id) as total FROM deals d
+                    LEFT JOIN sources s ON d.source_id = s.id";
+    if (!empty($where)) {
+        $count_query .= " WHERE " . implode(" AND ", $where);
+    }
+
+    $count_stmt = $conn->prepare($count_query);
+    $count_stmt->execute(!empty($params) ? $params : []);
+    $count_result = $count_stmt->fetch();
+    $total_articles = $count_result['total'];
+    $total_pages = ceil($total_articles / $page_size);
+
+    // Add pagination to main query
+    $offset = ($page - 1) * $page_size;
+    $query .= " ORDER BY MAX(d.scraped_at) DESC, MAX(d.posted_at) DESC LIMIT ? OFFSET ?";
+    $params[] = $page_size;
+    $params[] = $offset;
+
+    $stmt = $conn->prepare($query);
+    $stmt->execute($params);
+    $result = $stmt;
+    $articles_on_page = $result->fetchAll();
+    $result_count = count($articles_on_page);
+
+    // Get sources with deal counts
+    $sources_query = "SELECT s.id, s.name, s.mainCategory,
+                                    (SELECT COUNT(*) FROM deals d WHERE d.source_id = s.id AND d.is_active = 'Y') as article_count
+                                    FROM sources s
+                                    WHERE s.isActive = 'Y'
+                                    ORDER BY s.name";
+    $sources_result = $conn->query($sources_query);
+
+    // Get all sources
+    $all_sources_result = $conn->query("SELECT id, name, mainCategory, isActive, articles_count FROM sources ORDER BY name ASC");
+    $all_sources = [];
+    while ($source = $all_sources_result->fetch()) {
+        $all_sources[] = $source;
+    }
+
+    $unsummarized_count = 0;
+    $last_scrape_formatted = date('M j, Y g:i A');
+
+} else {
+    // ARTICLES MODE - continue with normal articles query
+
 // Track whether the parent filter came from a URL param (e.g. ?sports=1) or was inferred from category_filter
 $parent_filter_from_url = ($active_parent_filter !== null);
 
@@ -120,13 +237,10 @@ $parent_filter_from_url = ($active_parent_filter !== null);
 if (!$active_parent_filter && !empty($category_filter)) {
     $first_cat_id = $category_filter[0];
     $parent_query = $conn->prepare("SELECT p.name FROM categories c JOIN categories p ON c.parentID = p.id WHERE c.id = ? AND c.level = 2 LIMIT 1");
-    $parent_query->bind_param('i', $first_cat_id);
-    $parent_query->execute();
-    $parent_result = $parent_query->get_result();
-    if ($parent_row = $parent_result->fetch_assoc()) {
+    $parent_query->execute([$first_cat_id]);
+    if ($parent_row = $parent_query->fetch()) {
         $active_parent_filter = $parent_row['name'];
     }
-    $parent_query->close();
 }
 
 if ($parent_filter_from_url && $active_parent_filter) {
@@ -139,8 +253,7 @@ if ($parent_filter_from_url && $active_parent_filter) {
             $where[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a.id AND category_id IN ($placeholders))";
             foreach ($child_ids as $cid) {
                 $params[] = $cid;
-                $types .= 'i';
-            }
+                    }
         }
     }
 } elseif (!empty($category_filter)) {
@@ -149,7 +262,6 @@ if ($parent_filter_from_url && $active_parent_filter) {
     $where[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a.id AND category_id IN ($placeholders))";
     foreach ($category_filter as $cat_id) {
         $params[] = $cat_id;
-        $types .= 'i';
     }
 }
 
@@ -157,7 +269,6 @@ if ($parent_filter_from_url && $active_parent_filter) {
 if ($current_user && $current_user['isAdmin'] != 'Y') {
     $where[] = "(s.isBase = 'Y' OR (s.isBase = 'N' AND s.id IN (SELECT source_id FROM users_sources WHERE user_id = ?)))";
     $params[] = (int)$current_user['id'];
-    $types .= 'i';
 }
 
 // ALWAYS apply user preference filters first (if they exist)
@@ -167,7 +278,6 @@ if (!empty($preferred_sources)) {
     $where[] = "a.source_id IN ($placeholders)";
     foreach ($preferred_sources as $src_id) {
         $params[] = $src_id;
-        $types .= 'i';
     }
 }
 
@@ -177,7 +287,6 @@ if (!empty($preferred_categories)) {
     $where[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a.id AND category_id IN ($placeholders))";
     foreach ($preferred_categories as $cat_id) {
         $params[] = $cat_id;
-        $types .= 'i';
     }
 }
 
@@ -188,7 +297,6 @@ if (!empty($source_filter)) {
     $where[] = "a.source_id IN ($placeholders)";
     foreach ($source_filter as $src_id) {
         $params[] = $src_id;
-        $types .= 'i';
     }
 }
 
@@ -197,7 +305,6 @@ if ($search) {
     $search_param = "%{$search}%";
     $params[] = $search_param;
     $params[] = $search_param;
-    $types .= 'ss';
 }
 
 // Always show only summarized articles
@@ -233,93 +340,22 @@ if (!empty($where)) {
 }
 
 $count_stmt = $conn->prepare($count_query);
-if (!empty($params)) {
-    $count_stmt->bind_param($types, ...$params);
-}
-$count_stmt->execute();
-$total_articles = $count_stmt->get_result()->fetch_assoc()['total'];
+$count_stmt->execute(!empty($params) ? $params : []);
+$count_result = $count_stmt->fetch();
+$total_articles = $count_result['total'];
 $total_pages = ceil($total_articles / $page_size);
-$count_stmt->close();
 
 // Add pagination to main query
 $offset = ($page - 1) * $page_size;
 $query .= " ORDER BY a.scraped_at DESC, a.published_date DESC LIMIT ? OFFSET ?";
 $params[] = $page_size;
 $params[] = $offset;
-$types .= 'ii';
 
 $stmt = $conn->prepare($query);
-if (!empty($params)) {
-    $stmt->bind_param($types, ...$params);
-}
-$stmt->execute();
-$result = $stmt->get_result();
-
-// Get all categories for filter with counts based on current filters
-// Use subquery to count matching articles while keeping all categories
-$categories_query = "SELECT c.id, c.name, c.parentID, p.name AS parent_name,
-    (SELECT COUNT(DISTINCT a2.id)
-     FROM articles a2
-     JOIN article_categories ac2 ON a2.id = ac2.article_id
-     WHERE ac2.category_id = c.id";
-
-$cat_conditions = [];
-$cat_params = [];
-$cat_types = '';
-
-// Apply same filters as main query (except category filter)
-if (!empty($source_filter)) {
-    $placeholders = implode(',', array_fill(0, count($source_filter), '?'));
-    $cat_conditions[] = "a2.source_id IN ($placeholders)";
-    foreach ($source_filter as $src_id) {
-        $cat_params[] = $src_id;
-        $cat_types .= 'i';
-    }
-}
-
-if ($search) {
-    $cat_conditions[] = "(a2.title LIKE ? OR a2.summary LIKE ?)";
-    $search_param = "%{$search}%";
-    $cat_params[] = $search_param;
-    $cat_params[] = $search_param;
-    $cat_types .= 'ss';
-}
-
-// Always show only summarized articles
-$cat_conditions[] = "a2.summary IS NOT NULL AND a2.summary != ''";
-
-if ($date_filter && $date_filter !== 'all') {
-    switch ($date_filter) {
-        case '1day':
-            $cat_conditions[] = "a2.scraped_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)";
-            break;
-        case '1week':
-            $cat_conditions[] = "a2.scraped_at >= DATE_SUB(NOW(), INTERVAL 1 WEEK)";
-            break;
-        case '1month':
-            $cat_conditions[] = "a2.scraped_at >= DATE_SUB(NOW(), INTERVAL 1 MONTH)";
-            break;
-    }
-}
-
-if (!empty($cat_conditions)) {
-    $categories_query .= " AND " . implode(" AND ", $cat_conditions);
-}
-
-$categories_query .= ") as article_count
-    FROM categories c
-    LEFT JOIN categories p ON c.parentID = p.id
-    WHERE c.level = 2
-    ORDER BY p.name, c.name";
-
-if (!empty($cat_params)) {
-    $cat_stmt = $conn->prepare($categories_query);
-    $cat_stmt->bind_param($cat_types, ...$cat_params);
-    $cat_stmt->execute();
-    $categories_result = $cat_stmt->get_result();
-} else {
-    $categories_result = $conn->query($categories_query);
-}
+$stmt->execute($params);
+$result = $stmt;
+$articles_on_page = $result->fetchAll();
+$result_count = count($articles_on_page);
 
 // Get all sources for filter with counts based on current filters
 // Use subquery to count matching articles while keeping all sources
@@ -330,7 +366,6 @@ $sources_query = "SELECT s.id, s.name,
 
 $sources_conditions = [];
 $sources_params = [];
-$sources_types = '';
 
 // Apply same filters as main query (except source filter)
 if ($parent_filter_from_url && $active_parent_filter) {
@@ -342,7 +377,6 @@ if ($parent_filter_from_url && $active_parent_filter) {
             $sources_conditions[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a2.id AND category_id IN ($placeholders))";
             foreach ($child_ids as $cid) {
                 $sources_params[] = $cid;
-                $sources_types .= 'i';
             }
         }
     }
@@ -351,7 +385,6 @@ if ($parent_filter_from_url && $active_parent_filter) {
     $sources_conditions[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a2.id AND category_id IN ($placeholders))";
     foreach ($category_filter as $cat_id) {
         $sources_params[] = $cat_id;
-        $sources_types .= 'i';
     }
 }
 
@@ -360,7 +393,6 @@ if ($search) {
     $search_param = "%{$search}%";
     $sources_params[] = $search_param;
     $sources_params[] = $search_param;
-    $sources_types .= 'ss';
 }
 
 // Always show only summarized articles
@@ -392,16 +424,14 @@ $sources_query .= ") as article_count
 if ($current_user && $current_user['isAdmin'] != 'Y') {
     $sources_query .= " AND (s.isBase = 'Y' OR (s.isBase = 'N' AND s.id IN (SELECT source_id FROM users_sources WHERE user_id = ?)))";
     $sources_params[] = (int)$current_user['id'];
-    $sources_types .= 'i';
 }
 
 $sources_query .= " ORDER BY s.name";
 
 if (!empty($sources_params)) {
     $sources_stmt = $conn->prepare($sources_query);
-    $sources_stmt->bind_param($sources_types, ...$sources_params);
-    $sources_stmt->execute();
-    $sources_result = $sources_stmt->get_result();
+    $sources_stmt->execute($sources_params);
+    $sources_result = $sources_stmt;
 } else {
     $sources_result = $conn->query($sources_query);
 }
@@ -409,14 +439,13 @@ if (!empty($sources_params)) {
 // Get all sources with main category for sources modal
 if ($current_user && $current_user['isAdmin'] != 'Y') {
     $all_sources_stmt = $conn->prepare("SELECT id, name, mainCategory, isActive, articles_count FROM sources WHERE isBase = 'Y' OR (isBase = 'N' AND id IN (SELECT source_id FROM users_sources WHERE user_id = ?)) ORDER BY name ASC");
-    $all_sources_stmt->bind_param("i", $current_user['id']);
-    $all_sources_stmt->execute();
-    $all_sources_result = $all_sources_stmt->get_result();
+    $all_sources_stmt->execute([$current_user['id']]);
+    $all_sources_result = $all_sources_stmt;
 } else {
     $all_sources_result = $conn->query("SELECT id, name, mainCategory, isActive, articles_count FROM sources ORDER BY name ASC");
 }
 $all_sources = [];
-while ($source = $all_sources_result->fetch_assoc()) {
+while ($source = $all_sources_result->fetch()) {
     $all_sources[] = $source;
 }
 
@@ -424,16 +453,109 @@ while ($source = $all_sources_result->fetch_assoc()) {
 $unsummarized_query = "SELECT COUNT(*) as count FROM articles
                        WHERE (summary IS NULL OR summary = '')
                        AND (isSummaryFailed IS NULL OR isSummaryFailed != 'Y')";
-$unsummarized_count = $conn->query($unsummarized_query)->fetch_assoc()['count'];
+$unsummarized_result = $conn->query($unsummarized_query)->fetch();
+$unsummarized_count = $unsummarized_result['count'];
 
 // Get last scrape time
 $last_scrape_query = "SELECT MAX(scraped_at) as last_scrape FROM articles";
-$last_scrape_result = $conn->query($last_scrape_query)->fetch_assoc();
+$last_scrape_result = $conn->query($last_scrape_query)->fetch();
 $last_scrape_time = $last_scrape_result['last_scrape'] ?? 'Never';
 if ($last_scrape_time !== 'Never') {
     $last_scrape_formatted = date('M j, Y g:i A', strtotime($last_scrape_time));
 } else {
     $last_scrape_formatted = 'Never';
+}
+
+} // End of articles mode else block
+
+// Get all categories for filter with counts based on current filters
+// Use subquery to count matching articles or deals while keeping all categories
+if ($deals_filter) {
+    // Count deals when viewing deals page
+    $categories_query = "SELECT c.id, c.name, c.parentID, p.name AS parent_name,
+        (SELECT COUNT(DISTINCT d2.id)
+         FROM deals d2
+         JOIN deal_categories dc2 ON d2.id = dc2.deal_id
+         WHERE dc2.category_id = c.id AND d2.is_active = 'Y'";
+} else {
+    // Count articles when viewing articles page
+    $categories_query = "SELECT c.id, c.name, c.parentID, p.name AS parent_name,
+        (SELECT COUNT(DISTINCT a2.id)
+         FROM articles a2
+         JOIN article_categories ac2 ON a2.id = ac2.article_id
+         WHERE ac2.category_id = c.id";
+}
+
+$cat_conditions = [];
+$cat_params = [];
+
+// Apply same filters as main query (except category filter)
+if (!empty($source_filter)) {
+    $placeholders = implode(',', array_fill(0, count($source_filter), '?'));
+    if ($deals_filter) {
+        $cat_conditions[] = "d2.source_id IN ($placeholders)";
+    } else {
+        $cat_conditions[] = "a2.source_id IN ($placeholders)";
+    }
+    foreach ($source_filter as $src_id) {
+        $cat_params[] = $src_id;
+    }
+}
+
+if ($search) {
+    if ($deals_filter) {
+        $cat_conditions[] = "(d2.product_name LIKE ? OR d2.description LIKE ?)";
+    } else {
+        $cat_conditions[] = "(a2.title LIKE ? OR a2.summary LIKE ?)";
+    }
+    $search_param = "%{$search}%";
+    $cat_params[] = $search_param;
+    $cat_params[] = $search_param;
+}
+
+if (!$deals_filter) {
+    // Always show only summarized articles (doesn't apply to deals)
+    $cat_conditions[] = "a2.summary IS NOT NULL AND a2.summary != ''";
+} else {
+    // Only show deals with actual prices (filter out cashback-only deals)
+    $cat_conditions[] = "(d2.price IS NOT NULL OR d2.price_text IS NOT NULL)";
+}
+
+if ($date_filter && $date_filter !== 'all') {
+    $table_prefix = $deals_filter ? 'd2' : 'a2';
+    switch ($date_filter) {
+        case '1day':
+            $cat_conditions[] = "{$table_prefix}.scraped_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)";
+            break;
+        case '1week':
+            $cat_conditions[] = "{$table_prefix}.scraped_at >= DATE_SUB(NOW(), INTERVAL 1 WEEK)";
+            break;
+        case '1month':
+            $cat_conditions[] = "{$table_prefix}.scraped_at >= DATE_SUB(NOW(), INTERVAL 1 MONTH)";
+            break;
+    }
+}
+
+if (!empty($cat_conditions)) {
+    $categories_query .= " AND " . implode(" AND ", $cat_conditions);
+}
+
+$categories_query .= ") as article_count
+    FROM categories c
+    LEFT JOIN categories p ON c.parentID = p.id
+    WHERE c.level = 2
+    ORDER BY p.name, c.name";
+
+if (!empty($cat_params)) {
+    $cat_stmt = $conn->prepare($categories_query);
+    $cat_stmt->execute($cat_params);
+    $categories_result = $cat_stmt;
+    // Store results for later use in filter modal
+    $categories_result_array = $cat_stmt->fetchAll();
+} else {
+    $categories_result = $conn->query($categories_query);
+    // Store results for later use in filter modal
+    $categories_result_array = $categories_result->fetchAll();
 }
 ?>
 <!DOCTYPE html>
@@ -2638,7 +2760,7 @@ if ($last_scrape_time !== 'Never') {
             // Pre-fetch all level 2 categories grouped by parent
             $children_by_parent = [];
             $all_children_result = $conn->query("SELECT id, name, parentID FROM categories WHERE level = 2 ORDER BY parentID, name");
-            while ($child_row = $all_children_result->fetch_assoc()) {
+            while ($child_row = $all_children_result->fetch()) {
                 $parent_id = (int)$child_row['parentID'];
                 if (!isset($children_by_parent[$parent_id])) {
                     $children_by_parent[$parent_id] = [];
@@ -2749,7 +2871,7 @@ if ($last_scrape_time !== 'Never') {
                             $level2_cats = [];
                             if (!empty($cat_ids_str)) {
                                 $cat_result = $conn->query("SELECT name FROM categories WHERE id IN ($cat_ids_str) AND level = 2 ORDER BY name");
-                                while ($cat = $cat_result->fetch_assoc()) {
+                                while ($cat = $cat_result->fetch()) {
                                     $level2_cats[] = htmlspecialchars($cat['name']);
                                 }
                             }
@@ -2772,7 +2894,7 @@ if ($last_scrape_time !== 'Never') {
                                     $src_ids = implode(',', $source_filter);
                                     $src_result = $conn->query("SELECT name FROM sources WHERE id IN ($src_ids)");
                                     $sources = [];
-                                    while ($src = $src_result->fetch_assoc()) {
+                                    while ($src = $src_result->fetch()) {
                                         $sources[] = htmlspecialchars($src['name']);
                                     }
                                     if (!empty($sources)) {
@@ -2785,7 +2907,7 @@ if ($last_scrape_time !== 'Never') {
                                     $cat_ids = implode(',', $category_filter);
                                     $cat_result = $conn->query("SELECT name FROM categories WHERE id IN ($cat_ids)");
                                     $categories = [];
-                                    while ($cat = $cat_result->fetch_assoc()) {
+                                    while ($cat = $cat_result->fetch()) {
                                         $categories[] = htmlspecialchars($cat['name']);
                                     }
                                     if (!empty($categories)) {
@@ -2818,10 +2940,8 @@ if ($last_scrape_time !== 'Never') {
                                 $placeholders = implode(',', array_fill(0, count($category_filter), '?'));
                                 $cat_display_stmt = $conn->prepare("SELECT id, name, parentID, level FROM categories WHERE id IN ($placeholders)");
                                 if ($cat_display_stmt) {
-                                    $cat_display_stmt->bind_param(str_repeat('i', count($category_filter)), ...$category_filter);
-                                    $cat_display_stmt->execute();
-                                    $cat_display_result = $cat_display_stmt->get_result();
-                                    while ($cat = $cat_display_result->fetch_assoc()):
+                                    $cat_display_stmt->execute($category_filter);
+                                    while ($cat = $cat_display_stmt->fetch()):
                                         // Build URL to remove this specific category filter
                                         $remaining_cats = array_diff($category_filter, [$cat['id']]);
                                         $remove_url = '?';
@@ -2831,14 +2951,11 @@ if ($last_scrape_time !== 'Never') {
                                         if (empty($remaining_cats) && $cat['level'] == 2 && $cat['parentID']) {
                                             // Get parent category name and slug
                                             $parent_stmt = $conn->prepare("SELECT name FROM categories WHERE id = ?");
-                                            $parent_stmt->bind_param('i', $cat['parentID']);
-                                            $parent_stmt->execute();
-                                            $parent_result = $parent_stmt->get_result();
-                                            if ($parent_row = $parent_result->fetch_assoc()) {
+                                            $parent_stmt->execute([$cat['parentID']]);
+                                            if ($parent_row = $parent_stmt->fetch()) {
                                                 $parent_slug = isset($category_slug_map[$parent_row['name']]) ? $category_slug_map[$parent_row['name']] : strtolower($parent_row['name']);
                                                 $url_params[] = $parent_slug . '=1';
                                             }
-                                            $parent_stmt->close();
                                         } else {
                                             // Keep other category filters
                                             foreach ($remaining_cats as $remaining_cat) {
@@ -2875,7 +2992,6 @@ if ($last_scrape_time !== 'Never') {
                                         </a>
                             <?php
                                     endwhile;
-                                    $cat_display_stmt->close();
                                 }
                             }
                             ?>
@@ -2890,10 +3006,8 @@ if ($last_scrape_time !== 'Never') {
                                 $placeholders = implode(',', array_fill(0, count($source_filter), '?'));
                                 $src_display_stmt = $conn->prepare("SELECT id, name FROM sources WHERE id IN ($placeholders)");
                                 if ($src_display_stmt) {
-                                    $src_display_stmt->bind_param(str_repeat('i', count($source_filter)), ...$source_filter);
-                                    $src_display_stmt->execute();
-                                    $src_display_result = $src_display_stmt->get_result();
-                                    while ($src = $src_display_result->fetch_assoc()):
+                                    $src_display_stmt->execute($source_filter);
+                                    while ($src = $src_display_stmt->fetch()):
                                         // Build URL to remove this specific source filter
                                         $remaining_srcs = array_diff($source_filter, [$src['id']]);
                                         $remove_url = '?';
@@ -2933,7 +3047,6 @@ if ($last_scrape_time !== 'Never') {
                                         </a>
                             <?php
                                     endwhile;
-                                    $src_display_stmt->close();
                                 }
                             }
                             ?>
@@ -2982,8 +3095,14 @@ if ($last_scrape_time !== 'Never') {
                                 </button>
                             </div>
                             <?php
-                            $sources_result->data_seek(0);
-                            while ($src = $sources_result->fetch_assoc()):
+                            // Re-execute query for modal display if using prepared statement
+                            if (isset($sources_stmt)) {
+                                $sources_stmt->execute($sources_params);
+                                $modal_sources_result = $sources_stmt;
+                            } else {
+                                $modal_sources_result = $conn->query($sources_query);
+                            }
+                            while ($src = $modal_sources_result->fetch()):
                                 // Skip if user has preferences and this source is not in them
                                 if (!empty($preferred_sources) && !in_array($src['id'], $preferred_sources)) {
                                     continue;
@@ -3011,16 +3130,39 @@ if ($last_scrape_time !== 'Never') {
                             </div>
                             <div>
                             <?php
-                            // Build article count lookup from categories_result
+                            // Build article/deal count lookup from stored results
                             $cat_counts = [];
-                            $categories_result->data_seek(0);
-                            while ($cat = $categories_result->fetch_assoc()) {
+                            // Get categories array if not already set
+                            if (!isset($categories_result_array)) {
+                                if (isset($cat_stmt)) {
+                                    // Re-execute prepared statement
+                                    $cat_stmt->execute($cat_params);
+                                    $categories_result_array = $cat_stmt->fetchAll();
+                                } else {
+                                    // Re-run query
+                                    $temp_result = $conn->query($categories_query);
+                                    $categories_result_array = $temp_result->fetchAll();
+                                }
+                            }
+                            foreach ($categories_result_array as $cat) {
                                 $cat_counts[(int)$cat['id']] = $cat['article_count'];
+                            }
+
+                            // DEBUG
+                            if ($deals_filter && isset($_GET['debug'])) {
+                                echo "<!-- DEBUG: Array count=" . count($categories_result_array) . " -->\n";
+                                foreach ($categories_result_array as $cat) {
+                                    if (in_array($cat['id'], [48,49,50,52])) {
+                                        echo "<!-- DEBUG: cat[{$cat['id']}]={$cat['article_count']} -->\n";
+                                    }
+                                }
+                                echo "<!-- DEBUG: cat_counts[48]=" . (isset($cat_counts[48]) ? $cat_counts[48] : 'not set') . " -->\n";
                             }
 
                             foreach ($level1_categories as $parent):
                                 $parent_id = $parent['id'];
-                                $children = isset($categories_grouped[$parent_id]) ? $categories_grouped[$parent_id] : [];
+                                $parent_name = $parent['name'];
+                                $children = isset($categories_grouped[$parent_name]) ? $categories_grouped[$parent_name] : [];
                                 if (empty($children)) continue;
 
                                 $icon = isset($category_icon_map[$parent['name']]) ? $category_icon_map[$parent['name']] : '📂';
@@ -3101,6 +3243,7 @@ if ($last_scrape_time !== 'Never') {
         if ($search) $query_params['search'] = $search;
         if ($date_filter && $date_filter !== 'all') $query_params['date'] = $date_filter;
         if ($page_size != 50) $query_params['size'] = $page_size;
+        if ($deals_filter) $query_params['deals'] = '1';
         if ($tech_filter) $query_params['tech'] = '1';
         if ($business_filter) $query_params['business'] = '1';
         if ($sports_filter) $query_params['sports'] = '1';
@@ -3118,7 +3261,7 @@ if ($last_scrape_time !== 'Never') {
         <div class="pagination" style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px; border-bottom: 1px solid #e0e0e0; padding-bottom: 10px; margin-bottom: 10px;">
             <!-- Stats -->
             <div class="pagination-stats" style="font-size: 14px; color: #666;">
-                Showing <?php echo ($offset + 1); ?>-<?php echo min($offset + $result->num_rows, $total_articles); ?>
+                Showing <?php echo ($offset + 1); ?>-<?php echo min($offset + $result_count, $total_articles); ?>
                 of <?php echo $total_articles; ?> article<?php echo $total_articles != 1 ? 's' : ''; ?>
                 (Page <?php echo $page; ?> of <?php echo max(1, $total_pages); ?>)
             </div>
@@ -3203,29 +3346,133 @@ if ($last_scrape_time !== 'Never') {
         </div>
 
         <div class="articles-grid">
-            <?php if ($result->num_rows > 0): ?>
-                <?php while ($row = $result->fetch_assoc()): ?>
+            <?php if ($result_count > 0): ?>
+                <?php foreach ($articles_on_page as $row): ?>
                     <div class="article-card">
-                        <div class="article-header">
-                            <div class="article-title">
-                                <h2>
-                                    <?php echo htmlspecialchars($row['title']); ?>
-                                    <?php if ($row['source_name']): ?>
-                                        <span class="source-badge"><?php echo htmlspecialchars($row['source_name']); ?></span>
-                                    <?php endif; ?>
-                                </h2>
+                        <?php if ($deals_filter): ?>
+                            <!-- Deal card (with or without image) -->
+                            <div style="display: flex; gap: 15px; margin-bottom: 15px;">
+                                <?php if (!empty($row['image_url'])): ?>
+                                    <a href="<?php echo htmlspecialchars($row['url']); ?>" target="_blank" style="flex-shrink: 0;">
+                                        <img src="<?php echo htmlspecialchars($row['image_url']); ?>"
+                                             alt="<?php echo htmlspecialchars($row['title']); ?>"
+                                             style="width: 150px; height: 150px; object-fit: cover; border-radius: 8px;">
+                                    </a>
+                                <?php else: ?>
+                                    <!-- Big $ placeholder for deals without image -->
+                                    <a href="<?php echo htmlspecialchars($row['url']); ?>" target="_blank" style="flex-shrink: 0;">
+                                        <div style="width: 150px; height: 150px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 80px; color: white; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                                            $
+                                        </div>
+                                    </a>
+                                <?php endif; ?>
+                                <div style="flex-grow: 1;">
+                                    <div class="article-header">
+                                        <div class="article-title">
+                                            <h2>
+                                                <a href="<?php echo htmlspecialchars($row['url']); ?>" target="_blank" style="text-decoration: none; color: inherit;">
+                                                    <?php echo htmlspecialchars($row['title']); ?>
+                                                </a>
+                                                <?php if ($row['source_name']): ?>
+                                                    <span class="source-badge"><?php echo htmlspecialchars($row['source_name']); ?></span>
+                                                <?php endif; ?>
+                                            </h2>
+                                            <?php if (!empty($row['price']) || !empty($row['price_text']) || !empty($row['discount_percentage'])): ?>
+                                                <div style="font-size: 24px; font-weight: bold; color: #10b981; margin-top: 10px;">
+                                                    <?php if (!empty($row['price']) || !empty($row['price_text'])): ?>
+                                                        💰 <?php echo !empty($row['price']) ? '$' . number_format($row['price'], 2) : htmlspecialchars($row['price_text']); ?>
+                                                        <?php if (!empty($row['discount_percentage'])): ?>
+                                                            <span style="color: #ef4444; font-size: 18px; margin-left: 10px;">
+                                                                (<?php echo $row['discount_percentage']; ?>% off)
+                                                            </span>
+                                                        <?php endif; ?>
+                                                    <?php elseif (!empty($row['discount_percentage'])): ?>
+                                                        💰 <span style="color: #10b981;"><?php echo $row['discount_percentage']; ?>% Cash Back</span>
+                                                    <?php endif; ?>
+                                                </div>
+                                            <?php endif; ?>
+                                            <?php if (!empty($row['store_name'])): ?>
+                                                <div style="color: #6b7280; margin-top: 5px;">
+                                                    🏪 <?php echo htmlspecialchars($row['store_name']); ?>
+                                                </div>
+                                            <?php endif; ?>
+                                            <?php if (!empty($row['votes_up'])): ?>
+                                                <div style="color: #3b82f6; margin-top: 5px;">
+                                                    👍 <?php echo $row['votes_up']; ?> votes
+                                                </div>
+                                            <?php endif; ?>
+                                            <?php if (!empty($row['categories']) && $deals_filter): ?>
+                                                <!-- Deal category badge -->
+                                                <div style="margin-top: 8px;">
+                                                    <?php
+                                                        $badge_color = match($row['categories']) {
+                                                            'New' => '#10b981',
+                                                            'Promoted' => '#f59e0b',
+                                                            'Popular' => '#3b82f6',
+                                                            'Personalized' => '#8b5cf6',
+                                                            default => '#6b7280'
+                                                        };
+                                                    ?>
+                                                    <span style="background: <?php echo $badge_color; ?>; color: white; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600;">
+                                                        <?php echo htmlspecialchars($row['categories']); ?>
+                                                    </span>
+                                                </div>
+                                            <?php endif; ?>
+                                        </div>
+                                        <div class="article-date">
+                                            <?php
+                                                $dt = new DateTime($row['scraped_at']);
+                                                $dt->setTimezone(new DateTimeZone('America/Los_Angeles'));
+                                                echo $dt->format('M d, Y g:i A') . ' PST';
+                                            ?>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="article-date">
-                                <?php
-                                    // Always show scraped time with hours/minutes in PST
-                                    $dt = new DateTime($row['scraped_at']);
-                                    $dt->setTimezone(new DateTimeZone('America/Los_Angeles'));
-                                    echo $dt->format('M d, Y g:i A') . ' PST';
-                                ?>
+                        <?php elseif (!empty($row['image_url'])): ?>
+                            <!-- Legacy: Article with image_url (shouldn't happen, but handle it) -->
+                            <div style="display: flex; gap: 15px; margin-bottom: 15px;">
+                                <img src="<?php echo htmlspecialchars($row['image_url']); ?>"
+                                     alt="<?php echo htmlspecialchars($row['title']); ?>"
+                                     style="width: 150px; height: 150px; object-fit: cover; border-radius: 8px;">
+                                <div style="flex-grow: 1;">
+                                    <div class="article-header">
+                                        <div class="article-title">
+                                            <h2><?php echo htmlspecialchars($row['title']); ?></h2>
+                                        </div>
+                                        <div class="article-date">
+                                            <?php
+                                                $dt = new DateTime($row['scraped_at']);
+                                                $dt->setTimezone(new DateTimeZone('America/Los_Angeles'));
+                                                echo $dt->format('M d, Y g:i A') . ' PST';
+                                            ?>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
-                        </div>
+                        <?php else: ?>
+                            <!-- Regular article card without image -->
+                            <div class="article-header">
+                                <div class="article-title">
+                                    <h2>
+                                        <?php echo htmlspecialchars($row['title']); ?>
+                                        <?php if ($row['source_name']): ?>
+                                            <span class="source-badge"><?php echo htmlspecialchars($row['source_name']); ?></span>
+                                        <?php endif; ?>
+                                    </h2>
+                                </div>
+                                <div class="article-date">
+                                    <?php
+                                        // Always show scraped time with hours/minutes in PST
+                                        $dt = new DateTime($row['scraped_at']);
+                                        $dt->setTimezone(new DateTimeZone('America/Los_Angeles'));
+                                        echo $dt->format('M d, Y g:i A') . ' PST';
+                                    ?>
+                                </div>
+                            </div>
+                        <?php endif; ?>
 
-                        <?php if ($row['summary'] && trim($row['summary']) != '' && strlen(trim($row['summary'])) > 20): ?>
+                        <?php if (empty($row['image_url']) && $row['summary'] && trim($row['summary']) != '' && strlen(trim($row['summary'])) > 20): ?>
                             <div class="article-footer">
                                 <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                                     <button class="btn-read-summary" onclick="toggleSummary(<?php echo $row['id']; ?>)">
@@ -3234,7 +3481,7 @@ if ($last_scrape_time !== 'Never') {
                                     <button class="btn-read-summary" onclick="readAloud(<?php echo $row['id']; ?>)">
                                         🔊 Read Aloud
                                     </button>
-                                    <?php if ($row['fullArticle'] && trim($row['fullArticle']) != ''): ?>
+                                    <?php if (isset($row['fullArticle']) && $row['fullArticle'] && trim($row['fullArticle']) != ''): ?>
                                     <button class="btn-read-summary" onclick="showFullText(<?php echo $row['id']; ?>)">
                                         📄 Full Text
                                     </button>
@@ -3275,7 +3522,8 @@ if ($last_scrape_time !== 'Never') {
                                 <?php echo htmlspecialchars($row['fullArticle']); ?>
                             </div>
                             <?php endif; ?>
-                        <?php else: ?>
+                        <?php elseif (empty($row['image_url'])): ?>
+                            <!-- Only show "summary pending" for articles, not deals -->
                             <div class="article-footer">
                                 <a href="<?php echo htmlspecialchars($row['url']); ?>"
                                    target="_article"
@@ -3289,7 +3537,7 @@ if ($last_scrape_time !== 'Never') {
                             </div>
                         <?php endif; ?>
                     </div>
-                <?php endwhile; ?>
+                <?php endforeach; ?>
             <?php else: ?>
                 <div class="no-results">
                     <h3>No articles found</h3>
@@ -3302,7 +3550,7 @@ if ($last_scrape_time !== 'Never') {
         <div class="pagination" style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px;">
             <!-- Stats -->
             <div class="pagination-stats" style="font-size: 14px; color: #666;">
-                Showing <?php echo ($offset + 1); ?>-<?php echo min($offset + $result->num_rows, $total_articles); ?>
+                Showing <?php echo ($offset + 1); ?>-<?php echo min($offset + $result_count, $total_articles); ?>
                 of <?php echo $total_articles; ?> article<?php echo $total_articles != 1 ? 's' : ''; ?>
                 (Page <?php echo $page; ?> of <?php echo max(1, $total_pages); ?>)
             </div>
@@ -4037,5 +4285,5 @@ if ($last_scrape_time !== 'Never') {
 </body>
 </html>
 <?php
-$conn->close();
+// PDO connection is automatically closed when script ends
 ?>

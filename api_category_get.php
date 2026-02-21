@@ -12,32 +12,24 @@ try {
               FROM categories
               ORDER BY level ASC, parentID ASC, name ASC";
 
-    $result = $conn->query($query);
+    $stmt = $conn->query($query);
+    $categories = [];
 
-    if ($result) {
-        $categories = [];
-
-        while ($row = $result->fetch_assoc()) {
-            $categories[] = [
-                'id' => (int)$row['id'],
-                'name' => $row['name'],
-                'description' => $row['description'],
-                'level' => (int)$row['level'],
-                'parentID' => $row['parentID'] ? (int)$row['parentID'] : null
-            ];
-        }
-
-        echo json_encode([
-            'success' => true,
-            'categories' => $categories,
-            'count' => count($categories)
-        ]);
-    } else {
-        echo json_encode([
-            'success' => false,
-            'error' => 'Database query failed: ' . $conn->error
-        ]);
+    while ($row = $stmt->fetch()) {
+        $categories[] = [
+            'id' => (int)$row['id'],
+            'name' => $row['name'],
+            'description' => $row['description'],
+            'level' => (int)$row['level'],
+            'parentID' => $row['parentID'] ? (int)$row['parentID'] : null
+        ];
     }
+
+    echo json_encode([
+        'success' => true,
+        'categories' => $categories,
+        'count' => count($categories)
+    ]);
 } catch (Exception $e) {
     echo json_encode([
         'success' => false,
@@ -45,5 +37,5 @@ try {
     ]);
 }
 
-$conn->close();
+$conn = null;
 ?>

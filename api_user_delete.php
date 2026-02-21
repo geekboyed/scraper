@@ -36,10 +36,8 @@ if ($id === (int)$current_user['id']) {
 
 // Check user exists
 $stmt = $conn->prepare("SELECT id, username FROM users WHERE id = ?");
-$stmt->bind_param("i", $id);
-$stmt->execute();
-$user = $stmt->get_result()->fetch_assoc();
-$stmt->close();
+$stmt->execute([$id]);
+$user = $stmt->fetch();
 
 if (!$user) {
     echo json_encode(['success' => false, 'error' => 'User not found']);
@@ -48,13 +46,11 @@ if (!$user) {
 
 // Delete the user
 $stmt = $conn->prepare("DELETE FROM users WHERE id = ?");
-$stmt->bind_param("i", $id);
 
-if ($stmt->execute()) {
+if ($stmt->execute([$id])) {
     echo json_encode(['success' => true, 'message' => 'User deleted successfully']);
 } else {
     echo json_encode(['success' => false, 'error' => 'Failed to delete user']);
 }
 
-$stmt->close();
-$conn->close();
+$conn = null;

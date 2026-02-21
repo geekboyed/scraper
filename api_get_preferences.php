@@ -19,10 +19,8 @@ try {
     // Get user's preferences
     $user_id = $current_user['id'];
     $stmt = $conn->prepare("SELECT preferenceJSON FROM users WHERE id = ?");
-    $stmt->bind_param("i", $user_id);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    $user = $result->fetch_assoc();
+    $stmt->execute([$user_id]);
+    $user = $stmt->fetch();
 
     // Parse preferences JSON
     $preferences = null;
@@ -35,26 +33,25 @@ try {
         $sources_result = $conn->query("SELECT id, name FROM sources WHERE isActive = 'Y' ORDER BY name");
     } else {
         $vis_stmt = $conn->prepare("SELECT id, name FROM sources WHERE isActive = 'Y' AND (isBase = 'Y' OR (isBase = 'N' AND id IN (SELECT source_id FROM users_sources WHERE user_id = ?))) ORDER BY name");
-        $vis_stmt->bind_param("i", $user_id);
-        $vis_stmt->execute();
-        $sources_result = $vis_stmt->get_result();
+        $vis_stmt->execute([$user_id]);
+        $sources_result = $vis_stmt;
     }
     $sources = [];
-    while ($source = $sources_result->fetch_assoc()) {
+    while ($source = $sources_result->fetch()) {
         $sources[] = $source;
     }
 
     // Get level 1 (parent) categories
     $parent_result = $conn->query("SELECT id, name FROM categories WHERE level = 1 ORDER BY name");
     $parent_categories = [];
-    while ($parent = $parent_result->fetch_assoc()) {
+    while ($parent = $parent_result->fetch()) {
         $parent_categories[] = $parent;
     }
 
     // Get level 2 (child) categories for preference checkboxes
     $categories_result = $conn->query("SELECT id, name, parentID FROM categories WHERE level = 2 ORDER BY name");
     $categories = [];
-    while ($category = $categories_result->fetch_assoc()) {
+    while ($category = $categories_result->fetch()) {
         $categories[] = $category;
     }
 
@@ -71,5 +68,5 @@ try {
     echo json_encode(['success' => false, 'error' => $e->getMessage()]);
 }
 
-$conn->close();
+$conn = null;
 ?>

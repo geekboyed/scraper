@@ -32,10 +32,8 @@ if ($id <= 0) {
 // Handle toggle active action
 if ($action === 'toggle_active') {
     $stmt = $conn->prepare("SELECT isActive FROM invite_codes WHERE id = ?");
-    $stmt->bind_param("i", $id);
-    $stmt->execute();
-    $code = $stmt->get_result()->fetch_assoc();
-    $stmt->close();
+    $stmt->execute([$id]);
+    $code = $stmt->fetch();
 
     if (!$code) {
         echo json_encode(['success' => false, 'error' => 'Invite code not found']);
@@ -44,15 +42,13 @@ if ($action === 'toggle_active') {
 
     $new_status = $code['isActive'] ? 0 : 1;
     $stmt = $conn->prepare("UPDATE invite_codes SET isActive = ? WHERE id = ?");
-    $stmt->bind_param("ii", $new_status, $id);
 
-    if ($stmt->execute()) {
+    if ($stmt->execute([$new_status, $id])) {
         echo json_encode(['success' => true, 'isActive' => $new_status]);
     } else {
         echo json_encode(['success' => false, 'error' => 'Failed to update active status']);
     }
-    $stmt->close();
-    $conn->close();
+    $conn = null;
     exit;
 }
 
@@ -67,10 +63,8 @@ if ($action === 'update_max_uses') {
 
     // Get current uses to validate
     $stmt = $conn->prepare("SELECT current_uses FROM invite_codes WHERE id = ?");
-    $stmt->bind_param("i", $id);
-    $stmt->execute();
-    $code = $stmt->get_result()->fetch_assoc();
-    $stmt->close();
+    $stmt->execute([$id]);
+    $code = $stmt->fetch();
 
     if (!$code) {
         echo json_encode(['success' => false, 'error' => 'Invite code not found']);
@@ -78,22 +72,18 @@ if ($action === 'update_max_uses') {
     }
 
     $stmt = $conn->prepare("UPDATE invite_codes SET max_uses = ? WHERE id = ?");
-    $stmt->bind_param("ii", $max_uses, $id);
 
-    if ($stmt->execute()) {
+    if ($stmt->execute([$max_uses, $id])) {
         // Check if code should be marked as used/unused based on new max_uses
         $is_used = $code['current_uses'] >= $max_uses ? 1 : 0;
         $update_used = $conn->prepare("UPDATE invite_codes SET is_used = ? WHERE id = ?");
-        $update_used->bind_param("ii", $is_used, $id);
-        $update_used->execute();
-        $update_used->close();
+        $update_used->execute([$is_used, $id]);
 
         echo json_encode(['success' => true, 'max_uses' => $max_uses]);
     } else {
         echo json_encode(['success' => false, 'error' => 'Failed to update max uses']);
     }
-    $stmt->close();
-    $conn->close();
+    $conn = null;
     exit;
 }
 
@@ -101,10 +91,8 @@ if ($action === 'update_max_uses') {
 if ($action === 'delete') {
     // Check if code has been used
     $stmt = $conn->prepare("SELECT current_uses FROM invite_codes WHERE id = ?");
-    $stmt->bind_param("i", $id);
-    $stmt->execute();
-    $code = $stmt->get_result()->fetch_assoc();
-    $stmt->close();
+    $stmt->execute([$id]);
+    $code = $stmt->fetch();
 
     if (!$code) {
         echo json_encode(['success' => false, 'error' => 'Invite code not found']);
@@ -113,17 +101,15 @@ if ($action === 'delete') {
 
     // Allow deletion even if used (admin decision)
     $stmt = $conn->prepare("DELETE FROM invite_codes WHERE id = ?");
-    $stmt->bind_param("i", $id);
 
-    if ($stmt->execute()) {
+    if ($stmt->execute([$id])) {
         echo json_encode(['success' => true]);
     } else {
         echo json_encode(['success' => false, 'error' => 'Failed to delete invite code']);
     }
-    $stmt->close();
-    $conn->close();
+    $conn = null;
     exit;
 }
 
 echo json_encode(['success' => false, 'error' => 'Invalid action']);
-$conn->close();
+$conn = null;

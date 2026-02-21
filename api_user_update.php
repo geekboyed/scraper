@@ -38,10 +38,8 @@ if ($action === 'toggle_admin') {
     }
 
     $stmt = $conn->prepare("SELECT isAdmin FROM users WHERE id = ?");
-    $stmt->bind_param("i", $id);
-    $stmt->execute();
-    $user = $stmt->get_result()->fetch_assoc();
-    $stmt->close();
+    $stmt->execute([$id]);
+    $user = $stmt->fetch();
 
     if (!$user) {
         echo json_encode(['success' => false, 'error' => 'User not found']);
@@ -50,15 +48,13 @@ if ($action === 'toggle_admin') {
 
     $new_status = $user['isAdmin'] == 'Y' ? 'N' : 'Y';
     $stmt = $conn->prepare("UPDATE users SET isAdmin = ? WHERE id = ?");
-    $stmt->bind_param("si", $new_status, $id);
 
-    if ($stmt->execute()) {
+    if ($stmt->execute([$new_status, $id])) {
         echo json_encode(['success' => true, 'isAdmin' => $new_status]);
     } else {
         echo json_encode(['success' => false, 'error' => 'Failed to update admin status']);
     }
-    $stmt->close();
-    $conn->close();
+    $conn = null;
     exit;
 }
 
@@ -71,10 +67,8 @@ if ($action === 'toggle_active') {
     }
 
     $stmt = $conn->prepare("SELECT isActive FROM users WHERE id = ?");
-    $stmt->bind_param("i", $id);
-    $stmt->execute();
-    $user = $stmt->get_result()->fetch_assoc();
-    $stmt->close();
+    $stmt->execute([$id]);
+    $user = $stmt->fetch();
 
     if (!$user) {
         echo json_encode(['success' => false, 'error' => 'User not found']);
@@ -83,15 +77,13 @@ if ($action === 'toggle_active') {
 
     $new_status = $user['isActive'] == 'Y' ? 'N' : 'Y';
     $stmt = $conn->prepare("UPDATE users SET isActive = ? WHERE id = ?");
-    $stmt->bind_param("si", $new_status, $id);
 
-    if ($stmt->execute()) {
+    if ($stmt->execute([$new_status, $id])) {
         echo json_encode(['success' => true, 'isActive' => $new_status]);
     } else {
         echo json_encode(['success' => false, 'error' => 'Failed to update active status']);
     }
-    $stmt->close();
-    $conn->close();
+    $conn = null;
     exit;
 }
 
@@ -131,32 +123,30 @@ if ($id === (int)$current_user['id'] && $isActive !== null && $isActive == 'N') 
 // Build update query based on what fields are provided
 if ($isAdmin !== null && $isActive !== null) {
     $stmt = $conn->prepare("UPDATE users SET username = ?, email = ?, isAdmin = ?, isActive = ? WHERE id = ?");
-    $stmt->bind_param("ssssi", $username, $email, $isAdmin, $isActive, $id);
+    $params = [$username, $email, $isAdmin, $isActive, $id];
 } elseif ($isAdmin !== null) {
     $stmt = $conn->prepare("UPDATE users SET username = ?, email = ?, isAdmin = ? WHERE id = ?");
-    $stmt->bind_param("sssi", $username, $email, $isAdmin, $id);
+    $params = [$username, $email, $isAdmin, $id];
 } elseif ($isActive !== null) {
     $stmt = $conn->prepare("UPDATE users SET username = ?, email = ?, isActive = ? WHERE id = ?");
-    $stmt->bind_param("sssi", $username, $email, $isActive, $id);
+    $params = [$username, $email, $isActive, $id];
 } else {
     $stmt = $conn->prepare("UPDATE users SET username = ?, email = ? WHERE id = ?");
-    $stmt->bind_param("ssi", $username, $email, $id);
+    $params = [$username, $email, $id];
 }
 
 try {
-    if ($stmt->execute()) {
+    if ($stmt->execute($params)) {
         // Fetch updated user
         $fetch = $conn->prepare("SELECT id, username, email, isAdmin, isActive, created_at, last_login FROM users WHERE id = ?");
-        $fetch->bind_param("i", $id);
-        $fetch->execute();
-        $user = $fetch->get_result()->fetch_assoc();
-        $fetch->close();
+        $fetch->execute([$id]);
+        $user = $fetch->fetch();
 
         echo json_encode(['success' => true, 'user' => $user]);
     } else {
         echo json_encode(['success' => false, 'error' => 'Failed to update user']);
     }
-} catch (mysqli_sql_exception $e) {
+} catch (PDOException $e) {
     if (strpos($e->getMessage(), 'Duplicate entry') !== false) {
         if (strpos($e->getMessage(), 'username') !== false) {
             echo json_encode(['success' => false, 'error' => 'Username already exists']);
@@ -170,5 +160,4 @@ try {
     }
 }
 
-$stmt->close();
-$conn->close();
+$conn = null;

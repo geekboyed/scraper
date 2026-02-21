@@ -46,23 +46,20 @@ if (strlen($username) < 3 || strlen($username) > 50) {
 // Non-admin users get sourceCount=5 (remaining sources), admins get 0 (unlimited)
 $sourceCount = ($isAdmin === 'Y') ? 0 : 5;
 $stmt = $conn->prepare("INSERT INTO users (username, email, isAdmin, sourceCount, isActive) VALUES (?, ?, ?, ?, ?)");
-$stmt->bind_param("sssis", $username, $email, $isAdmin, $sourceCount, $isActive);
 
 try {
-    if ($stmt->execute()) {
-        $new_id = $conn->insert_id;
+    if ($stmt->execute([$username, $email, $isAdmin, $sourceCount, $isActive])) {
+        $new_id = $conn->lastInsertId();
         // Fetch the created user
         $fetch = $conn->prepare("SELECT id, username, email, isAdmin, isActive, created_at, last_login FROM users WHERE id = ?");
-        $fetch->bind_param("i", $new_id);
-        $fetch->execute();
-        $user = $fetch->get_result()->fetch_assoc();
-        $fetch->close();
+        $fetch->execute([$new_id]);
+        $user = $fetch->fetch();
 
         echo json_encode(['success' => true, 'user' => $user]);
     } else {
         echo json_encode(['success' => false, 'error' => 'Failed to create user']);
     }
-} catch (mysqli_sql_exception $e) {
+} catch (PDOException $e) {
     if (strpos($e->getMessage(), 'Duplicate entry') !== false) {
         if (strpos($e->getMessage(), 'username') !== false) {
             echo json_encode(['success' => false, 'error' => 'Username already exists']);
@@ -76,5 +73,4 @@ try {
     }
 }
 
-$stmt->close();
-$conn->close();
+$conn = null;

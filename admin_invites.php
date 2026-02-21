@@ -48,7 +48,7 @@ $count_query = "SELECT
     SUM(CASE WHEN is_used = 0 AND (expires_at IS NULL OR expires_at > NOW()) THEN 1 ELSE 0 END) as available,
     SUM(CASE WHEN is_used = 0 AND expires_at IS NOT NULL AND expires_at <= NOW() THEN 1 ELSE 0 END) as expired
     FROM invite_codes";
-$counts = $conn->query($count_query)->fetch_assoc();
+$counts = $conn->query($count_query)->fetch();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -467,7 +467,7 @@ $counts = $conn->query($count_query)->fetch_assoc();
                     + New Invite Code
                 </button>
             </div>
-            <?php if ($result && $result->num_rows > 0): ?>
+            <?php $rows = $result ? $result->fetchAll() : []; if (count($rows) > 0): ?>
             <div style="overflow-x: auto;">
                 <table>
                     <thead>
@@ -479,7 +479,7 @@ $counts = $conn->query($count_query)->fetch_assoc();
                         </tr>
                     </thead>
                     <tbody>
-                        <?php while ($row = $result->fetch_assoc()): ?>
+                        <?php foreach ($rows as $row): ?>
                         <?php
                             $is_expired = !$row['is_used'] && $row['expires_at'] && strtotime($row['expires_at']) <= time();
                             $show_status_badge = false;
@@ -528,7 +528,7 @@ $counts = $conn->query($count_query)->fetch_assoc();
                             <td><?php echo htmlspecialchars($row['created_by_username'] ?? 'System'); ?></td>
                             <td><?php echo date('M j, Y', strtotime($row['created_at'])); ?></td>
                         </tr>
-                        <?php endwhile; ?>
+                        <?php endforeach; ?>
                     </tbody>
                 </table>
             </div>
@@ -762,4 +762,4 @@ $counts = $conn->query($count_query)->fetch_assoc();
     </div>
 </body>
 </html>
-<?php $conn->close(); ?>
+<?php $conn = null; ?>

@@ -39,7 +39,7 @@ try {
     // Validate defaultView dynamically from level 1 categories
     $valid_views = ['all'];
     $views_result = $conn->query("SELECT LOWER(name) AS view_name FROM categories WHERE level = 1 ORDER BY name");
-    while ($view_row = $views_result->fetch_assoc()) {
+    while ($view_row = $views_result->fetch()) {
         $valid_views[] = $view_row['view_name'];
     }
     if (!in_array($defaultView, $valid_views)) {
@@ -62,9 +62,8 @@ try {
     // Update user's preferences
     $user_id = $current_user['id'];
     $stmt = $conn->prepare("UPDATE users SET preferenceJSON = ? WHERE id = ?");
-    $stmt->bind_param("si", $preferences_json, $user_id);
 
-    if ($stmt->execute()) {
+    if ($stmt->execute([$preferences_json, $user_id])) {
         echo json_encode(['success' => true, 'message' => 'Preferences saved successfully']);
     } else {
         echo json_encode(['success' => false, 'error' => 'Failed to save preferences']);
@@ -74,5 +73,5 @@ try {
     echo json_encode(['success' => false, 'error' => $e->getMessage()]);
 }
 
-$conn->close();
+$conn = null;
 ?>

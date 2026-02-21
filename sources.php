@@ -21,11 +21,8 @@ $user_id = (int)$current_user['id'];
  */
 function userOwnsSource($conn, $user_id, $source_id) {
     $stmt = $conn->prepare("SELECT 1 FROM users_sources WHERE user_id = ? AND source_id = ?");
-    $stmt->bind_param("ii", $user_id, $source_id);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    $owns = ($result->num_rows > 0);
-    $stmt->close();
+    $stmt->execute([$user_id, $source_id]);
+    $owns = ($stmt->fetch() !== false);
     return $owns;
 }
 
@@ -41,10 +38,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // Check if URL already exists (may be inactive/soft-deleted)
         $check = $conn->prepare("SELECT id, isActive, isBase FROM sources WHERE url = ?");
-        $check->bind_param("s", $url);
-        $check->execute();
-        $existing = $check->get_result()->fetch_assoc();
-        $check->close();
+        $check->execute([$url]);
+        $existing = $check->fetch();
 
         // Admin creates base sources, regular users create non-base
         $isBase = $is_admin ? 'Y' : 'N';
@@ -54,22 +49,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($existing['isActive'] === 'N') {
                     // Reactivate the inactive source and update its details
                     $stmt = $conn->prepare("UPDATE sources SET name = ?, isActive = 'Y', mainCategory = ?, isBase = ? WHERE id = ?");
-                    $stmt->bind_param("sssi", $name, $mainCategory, $isBase, $existing['id']);
-                    if ($stmt->execute()) {
+                    if ($stmt->execute([$name, $mainCategory, $isBase, $existing['id']])) {
                         // Link to user if non-admin
                         if (!$is_admin) {
                             $link = $conn->prepare("INSERT IGNORE INTO users_sources (user_id, source_id) VALUES (?, ?)");
-                            $link->bind_param("ii", $user_id, $existing['id']);
-                            $link->execute();
-                            $link->close();
+                            $link->execute([$user_id, $existing['id']]);
                         }
                         $message = "Source reactivated successfully!";
                         $message_type = "success";
                     } else {
-                        $message = "Error: " . $conn->error;
+                        $message = "Error: Failed to reactivate source";
                         $message_type = "error";
                     }
-                    $stmt->close();
                 } else {
                     // Source exists and is already active
                     $message = "Error: This source is already active";
@@ -78,25 +69,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 // Source doesn't exist, insert new
                 $stmt = $conn->prepare("INSERT INTO sources (name, url, isActive, mainCategory, isBase) VALUES (?, ?, ?, ?, ?)");
-                $stmt->bind_param("sssss", $name, $url, $isActive, $mainCategory, $isBase);
-                if ($stmt->execute()) {
-                    $new_source_id = $conn->insert_id;
+                if ($stmt->execute([$name, $url, $isActive, $mainCategory, $isBase])) {
+                    $new_source_id = $conn->lastInsertId();
                     // Link to user if non-admin
                     if (!$is_admin) {
                         $link = $conn->prepare("INSERT IGNORE INTO users_sources (user_id, source_id) VALUES (?, ?)");
-                        $link->bind_param("ii", $user_id, $new_source_id);
-                        $link->execute();
-                        $link->close();
+                        $link->execute([$user_id, $new_source_id]);
                     }
                     $message = "Source added successfully!";
                     $message_type = "success";
                 } else {
-                    $message = "Error: " . $conn->error;
+                    $message = "Error: Failed to add source";
                     $message_type = "error";
                 }
-                $stmt->close();
             }
-        } catch (mysqli_sql_exception $e) {
+        } catch (PDOException $e) {
             if (strpos($e->getMessage(), 'Duplicate entry') !== false) {
                 $message = "✗ Error: This source already exists (duplicate URL or name)";
                 $message_type = "error";
@@ -120,17 +107,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $message_type = "error";
         } else {
             $stmt = $conn->prepare("UPDATE sources SET name = ?, url = ?, isActive = ?, mainCategory = ? WHERE id = ?");
-            $stmt->bind_param("ssssi", $name, $url, $isActive, $mainCategory, $id);
 
             try {
-                if ($stmt->execute()) {
+                if ($stmt->execute([$name, $url, $isActive, $mainCategory, $id])) {
                     $message = "Source updated successfully!";
                     $message_type = "success";
                 } else {
-                    $message = "Error: " . $conn->error;
+                    $message = "Error: Failed to update source";
                     $message_type = "error";
                 }
-            } catch (mysqli_sql_exception $e) {
+            } catch (PDOException $e) {
                 if (strpos($e->getMessage(), 'Duplicate entry') !== false) {
                     $message = "Error: This URL or name is already used by another source";
                     $message_type = "error";
@@ -139,7 +125,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $message_type = "error";
                 }
             }
-            $stmt->close();
         }
     }
 
@@ -149,32 +134,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Non-admin users can only toggle sources they own
         if (!$is_admin && !userOwnsSource($conn, $user_id, $id)) {
             echo json_encode(['success' => false, 'error' => 'Permission denied']);
-            $conn->close();
+            $conn = null;
             exit;
         }
 
         // Get current status
         $stmt = $conn->prepare("SELECT isActive FROM sources WHERE id = ?");
-        $stmt->bind_param("i", $id);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        $source = $result->fetch_assoc();
-        $stmt->close();
+        $stmt->execute([$id]);
+        $source = $stmt->fetch();
 
         // Toggle status
         $new_status = ($source['isActive'] === 'Y') ? 'N' : 'Y';
         $stmt = $conn->prepare("UPDATE sources SET isActive = ? WHERE id = ?");
-        $stmt->bind_param("si", $new_status, $id);
 
-        if ($stmt->execute()) {
+        if ($stmt->execute([$new_status, $id])) {
             echo json_encode(['success' => true, 'isActive' => $new_status]);
-            $stmt->close();
-            $conn->close();
+            $conn = null;
             exit;
         } else {
-            echo json_encode(['success' => false, 'error' => $conn->error]);
-            $stmt->close();
-            $conn->close();
+            echo json_encode(['success' => false, 'error' => 'Failed to toggle status']);
+            $conn = null;
             exit;
         }
     }
@@ -189,30 +168,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             // Soft delete: set isActive='N' instead of removing the row
             $stmt = $conn->prepare("UPDATE sources SET isActive = 'N' WHERE id = ?");
-            $stmt->bind_param("i", $id);
 
-            if ($stmt->execute()) {
+            if ($stmt->execute([$id])) {
                 $message = "Source deactivated successfully!";
                 $message_type = "success";
             } else {
-                $message = "Error: " . $conn->error;
+                $message = "Error: Failed to deactivate source";
                 $message_type = "error";
             }
-            $stmt->close();
         }
     }
 }
 
-// Get sources filtered by user visibility
+// Get sources filtered by user visibility with combined article+deal counts
 if ($is_admin) {
     // Admin sees all sources
-    $sources_result = $conn->query("SELECT * FROM sources ORDER BY name ASC");
+    $sources_result = $conn->query("
+        SELECT s.*,
+               (SELECT COUNT(*) FROM articles WHERE source_id = s.id) +
+               (SELECT COUNT(*) FROM deals WHERE source_id = s.id AND is_active = 'Y') as articles_count
+        FROM sources s
+        ORDER BY name ASC
+    ");
 } else {
     // Regular users see base sources + their own linked sources
-    $sources_stmt = $conn->prepare("SELECT s.* FROM sources s WHERE s.isBase = 'Y' OR (s.isBase = 'N' AND s.id IN (SELECT source_id FROM users_sources WHERE user_id = ?)) ORDER BY s.name ASC");
-    $sources_stmt->bind_param("i", $user_id);
-    $sources_stmt->execute();
-    $sources_result = $sources_stmt->get_result();
+    $sources_stmt = $conn->prepare("
+        SELECT s.*,
+               (SELECT COUNT(*) FROM articles WHERE source_id = s.id) +
+               (SELECT COUNT(*) FROM deals WHERE source_id = s.id AND is_active = 'Y') as articles_count
+        FROM sources s
+        WHERE s.isBase = 'Y' OR (s.isBase = 'N' AND s.id IN (SELECT source_id FROM users_sources WHERE user_id = ?))
+        ORDER BY s.name ASC
+    ");
+    $sources_stmt->execute([$user_id]);
+    $sources_result = $sources_stmt;
 }
 ?>
 <!DOCTYPE html>
@@ -447,6 +436,34 @@ if ($is_admin) {
             background: #fff3cd;
             color: #997404;
         }
+
+        .category-filters {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 15px;
+        }
+
+        .category-filter-btn {
+            padding: 8px 16px;
+            background: #f8f9fa;
+            color: #334155;
+            border: 2px solid #2563eb;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        .category-filter-btn:hover {
+            background: #e2e8f0;
+        }
+
+        .category-filter-btn.active {
+            background: #2563eb;
+            color: white;
+        }
     </style>
 </head>
 <body>
@@ -466,7 +483,16 @@ if ($is_admin) {
         <?php endif; ?>
 
         <div class="sources-table">
-            <h2 style="margin-bottom: 20px;">Scraping Sources</h2>
+            <h2 style="margin-bottom: 15px;">Scraping Sources</h2>
+            <div class="category-filters">
+                <button class="category-filter-btn active" onclick="filterByCategory('All')">All</button>
+                <?php
+                $filter_cats = get_level1_categories($conn);
+                foreach ($filter_cats as $fcat):
+                ?>
+                <button class="category-filter-btn" onclick="filterByCategory('<?php echo htmlspecialchars($fcat['name']); ?>')"><?php echo htmlspecialchars($fcat['name']); ?></button>
+                <?php endforeach; ?>
+            </div>
             <table>
                 <thead>
                     <tr>
@@ -480,13 +506,13 @@ if ($is_admin) {
                     </tr>
                 </thead>
                 <tbody>
-                    <?php while ($source = $sources_result->fetch_assoc()):
+                    <?php while ($source = $sources_result->fetch()):
                         $categoryClass = 'category-' . strtolower($source['mainCategory'] ?? 'business');
                         $isSourceActive = ($source['isActive'] == 'Y');
                         $isBaseSource = ($source['isBase'] == 'Y');
                         $canModify = $is_admin || (!$isBaseSource && userOwnsSource($conn, $user_id, $source['id']));
                     ?>
-                        <tr>
+                        <tr data-category="<?php echo htmlspecialchars($source['mainCategory'] ?? 'Business'); ?>">
                             <td><strong><?php echo htmlspecialchars($source['name']); ?></strong></td>
                             <td style="font-size: 0.9em;">
                                 <a href="<?php echo htmlspecialchars($source['url']); ?>" target="_blank">
@@ -661,6 +687,26 @@ if ($is_admin) {
             });
         }
 
+        function filterByCategory(category) {
+            // Update active button
+            document.querySelectorAll('.category-filter-btn').forEach(function(btn) {
+                btn.classList.remove('active');
+                if (btn.textContent.trim() === category) {
+                    btn.classList.add('active');
+                }
+            });
+
+            // Filter table rows
+            var rows = document.querySelectorAll('tbody tr[data-category]');
+            rows.forEach(function(row) {
+                if (category === 'All' || row.getAttribute('data-category') === category) {
+                    row.style.display = '';
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+        }
+
         // Close modal on outside click
         document.getElementById('sourceModal').addEventListener('click', function(e) {
             if (e.target === this) {
@@ -670,4 +716,4 @@ if ($is_admin) {
     </script>
 </body>
 </html>
-<?php $conn->close(); ?>
+<?php $conn = null; ?>

@@ -12,12 +12,12 @@ $query = "SELECT COUNT(*) as count FROM articles
           WHERE (summary IS NULL OR summary = '')
           AND (isSummaryFailed IS NULL OR isSummaryFailed != 'Y')";
 
-$result = $conn->query($query);
-$count = $result->fetch_assoc()['count'];
+$stmt = $conn->query($query);
+$count = $stmt->fetch()['count'];
 
 echo json_encode([
     'success' => true,
     'count' => (int)$count
 ]);
 
-$conn->close();
+$conn = null;

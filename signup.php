@@ -27,51 +27,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } else {
         // Check if username already exists
         $stmt = $conn->prepare("SELECT id FROM users WHERE username = ?");
-        $stmt->bind_param('s', $username);
-        $stmt->execute();
-        if ($stmt->get_result()->num_rows > 0) {
+        $stmt->execute([$username]);
+        if ($stmt->fetch()) {
             $error = 'Username is already taken.';
-            $stmt->close();
         } else {
-            $stmt->close();
-
             // Check if email already exists
             $stmt = $conn->prepare("SELECT id FROM users WHERE email = ?");
-            $stmt->bind_param('s', $email);
-            $stmt->execute();
-            if ($stmt->get_result()->num_rows > 0) {
+            $stmt->execute([$email]);
+            if ($stmt->fetch()) {
                 $error = 'An account with this email already exists.';
-                $stmt->close();
             } else {
-                $stmt->close();
-
                 // Validate invite code (check if still has uses available)
                 $stmt = $conn->prepare("SELECT id, current_uses, max_uses FROM invite_codes WHERE code = ? AND current_uses < max_uses AND (expires_at IS NULL OR expires_at > NOW())");
-                $stmt->bind_param('s', $invite_code);
-                $stmt->execute();
-                $invite_result = $stmt->get_result();
+                $stmt->execute([$invite_code]);
+                $invite_row = $stmt->fetch();
 
-                if ($invite_result->num_rows === 0) {
+                if (!$invite_row) {
                     $error = 'Invalid, expired, or fully used invite code.';
-                    $stmt->close();
                 } else {
-                    $invite_row = $invite_result->fetch_assoc();
                     $invite_code_id = $invite_row['id'];
-                    $stmt->close();
 
                     // Create user (isAdmin defaults to 'N', sourceCount=5 for non-admin)
                     $stmt = $conn->prepare("INSERT INTO users (username, email, isAdmin, sourceCount, invite_code_id, isActive) VALUES (?, ?, 'N', 5, ?, 'Y')");
-                    $stmt->bind_param('ssi', $username, $email, $invite_code_id);
 
-                    if ($stmt->execute()) {
-                        $new_user_id = $stmt->insert_id;
-                        $stmt->close();
+                    if ($stmt->execute([$username, $email, $invite_code_id])) {
+                        $new_user_id = $conn->lastInsertId();
 
                         // Increment invite code usage
                         $stmt = $conn->prepare("UPDATE invite_codes SET current_uses = current_uses + 1, used_by = ?, used_at = NOW(), is_used = IF(current_uses + 1 >= max_uses, 1, 0) WHERE id = ?");
-                        $stmt->bind_param('ii', $new_user_id, $invite_code_id);
-                        $stmt->execute();
-                        $stmt->close();
+                        $stmt->execute([$new_user_id, $invite_code_id]);
 
                         // Set login cookie
                         setcookie('user_session', $new_user_id, [
@@ -85,7 +69,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         exit;
                     } else {
                         $error = 'An error occurred creating your account. Please try again.';
-                        $stmt->close();
                     }
                 }
             }

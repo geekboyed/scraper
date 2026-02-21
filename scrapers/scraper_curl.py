@@ -205,7 +205,7 @@ class CurlScraper:
                     continue
 
                 href = link.get('href', '')
-                title = heading.get_text(strip=True)
+                title = link.get_text(separator=' ', strip=True)
 
                 if not title or len(title) < 30:
                     continue
@@ -245,7 +245,7 @@ class CurlScraper:
                         break
 
                     href = link.get('href', '')
-                    title = link.get_text(strip=True)
+                    title = link.get_text(separator=' ', strip=True)
 
                     if not title or len(title) < 30 or len(title) > 200:
                         continue
@@ -391,6 +391,7 @@ class CurlScraper:
 
             print(f"\n💾 Saving {len(articles)} articles...")
             saved = 0
+            duplicates = 0
 
             for i, article in enumerate(articles, 1):
                 result = self.save_article(article)
@@ -399,7 +400,7 @@ class CurlScraper:
                     print(f"[{i}/{len(articles)}] ✓ {article['title'][:70]}")
                     saved += 1
                 elif result == 'skipped':
-                    print(f"[{i}/{len(articles)}] ⊘ Duplicate")
+                    duplicates += 1
 
             total_saved += saved
 
@@ -407,6 +408,8 @@ class CurlScraper:
             self.update_source_stats(source['id'])
 
             print(f"\n✓ {source['name']}: {saved} new articles")
+            if duplicates > 0:
+                print(f"⊘ Skipped {duplicates} duplicates")
 
         print(f"\n{'=' * 60}")
         print(f"TOTAL: {total_saved} new articles from {len(sources)} sources")

@@ -7,7 +7,8 @@ A production web scraping and AI summarization system that collects business new
 - **Backend**: Python 3 with BeautifulSoup, Playwright, Requests
 - **Database**: MySQL (remote at 192.168.1.210)
 - **Frontend**: PHP with Bootstrap
-- **AI/ML**: 1min.ai (GPT-4o-mini), Anthropic Claude 3.5 Haiku
+- **Database Layer**: **PDO (PHP Data Objects)** - REQUIRED for all PHP database operations
+- **AI/ML**: DeepSeek (primary), Anthropic Claude Haiku (backup)
 - **Automation**: Cron jobs for scheduled scraping and summarization
 - **Server**: Apache/LAMP stack on WSL2
 
@@ -51,9 +52,18 @@ A production web scraping and AI summarization system that collects business new
 
 ### Database Operations
 - Database: `scrapeDB` on 192.168.1.210
-- Tables: `articles`, `sources`, `categories`, `article_categories`
+- Tables: `articles`, `sources`, `categories`, `article_categories`, `deals`
+- **CRITICAL: Always use PDO (PHP Data Objects)** - Never use mysqli
 - Always use prepared statements to prevent SQL injection
 - Set timezone to PST (`SET time_zone = '-08:00'`)
+- **PDO Configuration Required**:
+  ```php
+  $conn = new PDO("mysql:host=$host;dbname=$db;charset=utf8mb4", $user, $pass, [
+      PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+      PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+      PDO::ATTR_EMULATE_PREPARES => false
+  ]);
+  ```
 - **Read-only operations allowed without authorization**: Any SELECT queries, DESCRIBE, SHOW TABLES, SHOW COLUMNS, EXPLAIN, and other schema inspection commands can be executed freely for debugging and analysis
 - Test queries before running on production data (applies to INSERT, UPDATE, DELETE, ALTER)
 
