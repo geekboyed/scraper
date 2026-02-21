@@ -144,6 +144,30 @@ class CurlScraper:
 
         return cleaned
 
+    def clean_ny_athletic_title(self, title, url):
+        """
+        Clean NY Athletic titles:
+        - Remove author names at end (e.g., "John Smith", "Jane Doe3")
+        - Remove trailing numbers (comment counts)
+        - Remove "NY Athletic" suffix
+        """
+        if 'nytimes.com/athletic' not in url.lower():
+            return title
+
+        cleaned = title
+
+        # Remove "NY Athletic" suffix
+        cleaned = re.sub(r'\s*NY\s+Athletic\s*$', '', cleaned, flags=re.IGNORECASE)
+
+        # Remove author name pattern at end: "FirstName LastName" (may have numbers attached)
+        # This pattern is more specific: author name directly attached or with small number
+        cleaned = re.sub(r'([a-z])([A-Z][a-z]+\s+[A-Z][a-z]+)\s*\d{0,3}\s*$', r'\1', cleaned)
+
+        # Clean up extra whitespace
+        cleaned = ' '.join(cleaned.split())
+
+        return cleaned
+
     def scrape_rss_feed(self, rss_url):
         """Scrape RSS/Atom feed (for sources like The Verge)"""
         try:
@@ -316,6 +340,12 @@ class CurlScraper:
         try:
             # Clean CNN video titles
             article_data['title'] = self.clean_cnn_video_title(
+                article_data['title'],
+                article_data['url']
+            )
+
+            # Clean NY Athletic titles
+            article_data['title'] = self.clean_ny_athletic_title(
                 article_data['title'],
                 article_data['url']
             )
