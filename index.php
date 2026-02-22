@@ -3523,7 +3523,7 @@ if (!empty($cat_params)) {
                                 <?php echo htmlspecialchars($row['fullArticle']); ?>
                             </div>
                             <?php endif; ?>
-                        <?php elseif (empty($row['image_url'])): ?>
+                        <?php elseif (empty($row['image_url']) && !$deals_filter): ?>
                             <!-- Only show "summary pending" for articles, not deals -->
                             <div class="article-footer">
                                 <a href="<?php echo htmlspecialchars($row['url']); ?>"
