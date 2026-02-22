@@ -11,10 +11,12 @@ import env_loader  # Auto-loads .env and ~/.env_AI
 import requests
 from xml.etree import ElementTree as ET
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import mysql.connector
 from mysql.connector import Error
 import html
 import re
+from email.utils import parsedate_to_datetime
 
 class VergeRSSScraper:
     def __init__(self):
@@ -82,6 +84,8 @@ class VergeRSSScraper:
             for entry in entries[:20]:  # Limit to 20 articles
                 title_elem = entry.find('atom:title', ns)
                 link_elem = entry.find("atom:link[@rel='alternate']", ns)
+                published_elem = entry.find('atom:published', ns)
+                updated_elem = entry.find('atom:updated', ns)
 
                 if title_elem is not None and link_elem is not None:
                     title = html.unescape(title_elem.text or '')
@@ -92,11 +96,35 @@ class VergeRSSScraper:
                     title = re.sub(r'<[^>]+>', '', title)
                     title = title.strip()
 
+                    # Extract publish datetime from Atom feed and convert to Pacific time
+                    pub_datetime = None
+                    pacific_tz = ZoneInfo('America/Los_Angeles')
+
+                    if published_elem is not None and published_elem.text:
+                        try:
+                            # Parse ISO 8601 datetime (Atom standard)
+                            pub_datetime = datetime.fromisoformat(published_elem.text.replace('Z', '+00:00'))
+                            # Convert to Pacific time
+                            pub_datetime = pub_datetime.astimezone(pacific_tz)
+                        except:
+                            pass
+                    elif updated_elem is not None and updated_elem.text:
+                        try:
+                            pub_datetime = datetime.fromisoformat(updated_elem.text.replace('Z', '+00:00'))
+                            # Convert to Pacific time
+                            pub_datetime = pub_datetime.astimezone(pacific_tz)
+                        except:
+                            pass
+
+                    # Fallback to current Pacific datetime if parsing failed
+                    if not pub_datetime:
+                        pub_datetime = datetime.now(pacific_tz)
+
                     if title and url:
                         articles.append({
                             'title': title[:500],
                             'url': url[:500],
-                            'date': datetime.now().date()
+                            'date': pub_datetime
                         })
 
             return articles

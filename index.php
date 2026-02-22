@@ -126,6 +126,7 @@ if ($deals_filter) {
               MAX(d.original_price) as original_price,
               MAX(d.discount_percentage) as discount_percentage,
               MAX(d.store_name) as store_name, MAX(d.image_url) as image_url,
+              MAX(d.image_auto_found) as image_auto_found,
               MAX(d.votes_up) as votes_up, MAX(d.votes_down) as votes_down,
               MAX(d.comments_count) as comments_count, MAX(d.deal_type) as deal_type,
               MAX(d.category) as category, MAX(d.category) as categories,
@@ -3356,7 +3357,7 @@ if (!empty($cat_params)) {
                                     <a href="<?php echo htmlspecialchars($row['url']); ?>" target="_blank" style="flex-shrink: 0;">
                                         <img src="<?php echo htmlspecialchars($row['image_url']); ?>"
                                              alt="<?php echo htmlspecialchars($row['title']); ?>"
-                                             style="width: 150px; height: 150px; object-fit: cover; border-radius: 8px;">
+                                             style="width: 150px; height: 150px; object-fit: cover; border-radius: 8px;<?php echo ($row['image_auto_found'] === 'Y') ? ' border: 3px solid #10b981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);' : ''; ?>">
                                     </a>
                                 <?php else: ?>
                                     <!-- Big $ placeholder for deals without image -->

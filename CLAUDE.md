@@ -55,7 +55,11 @@ A production web scraping and AI summarization system that collects business new
 - Tables: `articles`, `sources`, `categories`, `article_categories`, `deals`
 - **CRITICAL: Always use PDO (PHP Data Objects)** - Never use mysqli
 - Always use prepared statements to prevent SQL injection
-- Set timezone to PST (`SET time_zone = '-08:00'`)
+- **CRITICAL: All dates/times must be in Pacific Time**:
+  - Set timezone to PST/PDT (`SET time_zone = '-08:00'`)
+  - All datetime comparisons and displays must use Pacific Time
+  - Python scrapers: Use `ZoneInfo('America/Los_Angeles')` to convert UTC/other timezones to Pacific
+  - Extract actual publication times from RSS feeds (pubDate/published), don't use just dates
 - **PDO Configuration Required**:
   ```php
   $conn = new PDO("mysql:host=$host;dbname=$db;charset=utf8mb4", $user, $pass, [

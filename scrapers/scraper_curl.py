@@ -11,6 +11,7 @@ import env_loader  # Auto-loads .env and ~/.env_AI
 import subprocess
 from bs4 import BeautifulSoup
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import mysql.connector
 from mysql.connector import Error
 import re
@@ -18,6 +19,7 @@ import json
 import requests
 from xml.etree import ElementTree as ET
 import html as html_module
+from email.utils import parsedate_to_datetime
 
 class CurlScraper:
     def __init__(self, source_id=None, source_url=None):
@@ -116,19 +118,28 @@ class CurlScraper:
         - Remove 'Video' prefix
         - Remove time stamps (e.g., '3:33', '1:10')
         - Remove ' CNN' suffix
+        - Remove image attributions (e.g., 'Frazer Harrison/Getty Images...')
         - Add '(video)' suffix
         """
         if 'cnn.com' not in url.lower():
             return title
 
+        # Remove image attributions that start with bullet points or "Video"
+        # Pattern: "• VideoName/Agency..." or just image credits
+        cleaned = re.sub(r'^[•●]\s*Video', '', title)
+        cleaned = re.sub(r'^[•●]\s*', '', cleaned)
+
+        # Remove image attribution patterns (Name/Agency/Getty Images, etc.)
+        cleaned = re.sub(r'[A-Z][a-z]+\s+[A-Z][a-z]+/[^(]+?(?=\s*\(video\)|$)', '', cleaned)
+
         # Check if this is a video title (starts with "Video" or has timestamp)
-        is_video = title.startswith('Video') or re.search(r'\d+:\d+', title)
+        is_video = cleaned.startswith('Video') or re.search(r'\d+:\d+', cleaned)
 
         if not is_video:
-            return title
+            return cleaned.strip()
 
         # Remove "Video" prefix
-        cleaned = re.sub(r'^Video\s*', '', title)
+        cleaned = re.sub(r'^Video\s*', '', cleaned)
 
         # Remove time stamps (e.g., "3:33", "1:10:45", etc.)
         cleaned = re.sub(r'\s*\d+:\d+(?::\d+)?\s*', '', cleaned)
@@ -139,8 +150,32 @@ class CurlScraper:
         # Clean up extra whitespace
         cleaned = ' '.join(cleaned.split())
 
-        # Add (video) suffix
-        cleaned = f"{cleaned} (video)"
+        # Add (video) suffix if not already present
+        if not cleaned.endswith('(video)'):
+            cleaned = f"{cleaned} (video)"
+
+        return cleaned
+
+    def clean_scraped_title(self, title):
+        """
+        Clean raw scraped titles:
+        - Remove image attribution text (Name/Agency/Getty Images...)
+        - Remove bullet points
+        - Remove standalone 'Video' prefixes with image credits
+        """
+        if not title:
+            return title
+
+        # Remove bullet points at the start
+        cleaned = re.sub(r'^[•●]\s*', '', title)
+
+        # Remove image attribution patterns:
+        # "Frazer Harrison/Getty Images North America/Getty Images (video)"
+        # Pattern: FirstName LastName/Organization/Organization... before (video) or end
+        cleaned = re.sub(r'^(?:Video)?[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?/[^(]+?(?=\s*\(video\)|$)', '', cleaned)
+
+        # Clean up extra whitespace
+        cleaned = ' '.join(cleaned.split()).strip()
 
         return cleaned
 
@@ -194,6 +229,8 @@ class CurlScraper:
                 for entry in entries[:20]:
                     title_elem = entry.find('atom:title', ns)
                     link_elem = entry.find("atom:link[@rel='alternate']", ns)
+                    published_elem = entry.find('atom:published', ns)
+                    updated_elem = entry.find('atom:updated', ns)
 
                     if title_elem is not None and link_elem is not None:
                         title = html_module.unescape(title_elem.text or '')
@@ -203,27 +240,69 @@ class CurlScraper:
                         title = re.sub(r'<!\[CDATA\[(.*?)\]\]>', r'\1', title)
                         title = re.sub(r'<[^>]+>', '', title).strip()
 
+                        # Extract publish datetime from Atom feed and convert to Pacific time
+                        pub_datetime = None
+                        pacific_tz = ZoneInfo('America/Los_Angeles')
+
+                        if published_elem is not None and published_elem.text:
+                            try:
+                                # Parse ISO 8601 datetime (Atom standard)
+                                pub_datetime = datetime.fromisoformat(published_elem.text.replace('Z', '+00:00'))
+                                # Convert to Pacific time
+                                pub_datetime = pub_datetime.astimezone(pacific_tz)
+                            except:
+                                pass
+                        elif updated_elem is not None and updated_elem.text:
+                            try:
+                                pub_datetime = datetime.fromisoformat(updated_elem.text.replace('Z', '+00:00'))
+                                # Convert to Pacific time
+                                pub_datetime = pub_datetime.astimezone(pacific_tz)
+                            except:
+                                pass
+
+                        # Fallback to current Pacific datetime if parsing failed
+                        if not pub_datetime:
+                            pub_datetime = datetime.now(pacific_tz)
+
                         if title and url:
                             articles.append({
                                 'title': title[:500],
                                 'url': url[:500],
-                                'date': datetime.now().date()
+                                'date': pub_datetime
                             })
 
             else:  # RSS feed
                 for item in root.findall('.//item'):
                     title_elem = item.find('title')
                     link_elem = item.find('link')
+                    pubdate_elem = item.find('pubDate')
 
                     if title_elem is not None and link_elem is not None:
                         title = html_module.unescape(title_elem.text or '')
                         url = link_elem.text
 
+                        # Extract publish datetime from RSS feed and convert to Pacific time
+                        pub_datetime = None
+                        pacific_tz = ZoneInfo('America/Los_Angeles')
+
+                        if pubdate_elem is not None and pubdate_elem.text:
+                            try:
+                                # Parse RFC 2822 datetime (RSS standard)
+                                pub_datetime = parsedate_to_datetime(pubdate_elem.text)
+                                # Convert to Pacific time
+                                pub_datetime = pub_datetime.astimezone(pacific_tz)
+                            except:
+                                pass
+
+                        # Fallback to current Pacific datetime if parsing failed
+                        if not pub_datetime:
+                            pub_datetime = datetime.now(pacific_tz)
+
                         if title and url:
                             articles.append({
                                 'title': title[:500],
                                 'url': url[:500],
-                                'date': datetime.now().date()
+                                'date': pub_datetime
                             })
 
             print(f"✓ Found {len(articles)} articles")
@@ -265,6 +344,9 @@ class CurlScraper:
                 href = link.get('href', '')
                 title = link.get_text(separator=' ', strip=True)
 
+                # Clean image attributions and junk
+                title = self.clean_scraped_title(title)
+
                 if not title or len(title) < 30:
                     continue
 
@@ -289,7 +371,7 @@ class CurlScraper:
                 articles.append({
                     'title': title[:500],
                     'url': url[:500],
-                    'date': datetime.now().date()
+                    'date': datetime.now(ZoneInfo('America/Los_Angeles'))
                 })
 
                 if len(articles) >= 50:
@@ -304,6 +386,9 @@ class CurlScraper:
 
                     href = link.get('href', '')
                     title = link.get_text(separator=' ', strip=True)
+
+                    # Clean image attributions and junk
+                    title = self.clean_scraped_title(title)
 
                     if not title or len(title) < 30 or len(title) > 200:
                         continue
@@ -325,7 +410,7 @@ class CurlScraper:
                     articles.append({
                         'title': title[:500],
                         'url': url[:500],
-                        'date': datetime.now().date()
+                        'date': datetime.now(ZoneInfo('America/Los_Angeles'))
                     })
 
             print(f"✓ Found {len(articles)} articles")
@@ -524,6 +609,24 @@ class CurlScraper:
 
         if self.connection:
             self.connection.close()
+
+        # Run Slickdeals scraper
+        try:
+            print(f"\n{'=' * 60}")
+            print("Running Slickdeals Scraper")
+            print(f"{'=' * 60}")
+
+            from scraper_slickdeals import SlickdealsScraper
+            deals_scraper = SlickdealsScraper()
+            deals_saved = deals_scraper.run()
+
+            if deals_saved > 0:
+                print(f"\n✓ Saved {deals_saved} new deals")
+
+        except ImportError:
+            print("⚠ Slickdeals scraper not available")
+        except Exception as e:
+            print(f"⚠ Deals scraper error: {e}")
 
 if __name__ == "__main__":
     scraper = CurlScraper()

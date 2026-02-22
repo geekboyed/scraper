@@ -11,10 +11,12 @@ import env_loader  # Auto-loads .env and ~/.env_AI
 import requests
 from xml.etree import ElementTree as ET
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import mysql.connector
 from mysql.connector import Error
 import html
 import time
+from email.utils import parsedate_to_datetime
 
 class MarketWatchMultiRSSScraper:
     def __init__(self):
@@ -81,6 +83,7 @@ class MarketWatchMultiRSSScraper:
             for item in root.findall('.//item'):
                 title_elem = item.find('title')
                 link_elem = item.find('link')
+                pubdate_elem = item.find('pubDate')
 
                 if title_elem is not None and link_elem is not None:
                     title = html.unescape(title_elem.text)
@@ -90,10 +93,27 @@ class MarketWatchMultiRSSScraper:
                     if '?' in url:
                         url = url.split('?')[0]
 
+                    # Extract publish datetime from RSS feed and convert to Pacific time
+                    pub_datetime = None
+                    pacific_tz = ZoneInfo('America/Los_Angeles')
+
+                    if pubdate_elem is not None and pubdate_elem.text:
+                        try:
+                            # Parse RFC 2822 datetime (RSS standard)
+                            pub_datetime = parsedate_to_datetime(pubdate_elem.text)
+                            # Convert to Pacific time
+                            pub_datetime = pub_datetime.astimezone(pacific_tz)
+                        except:
+                            pass
+
+                    # Fallback to current Pacific datetime if parsing failed
+                    if not pub_datetime:
+                        pub_datetime = datetime.now(pacific_tz)
+
                     articles.append({
                         'title': title[:500],
                         'url': url[:500],
-                        'date': datetime.now().date()
+                        'date': pub_datetime
                     })
 
             return articles
