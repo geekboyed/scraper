@@ -322,6 +322,11 @@ class SlickdealsScraper:
 
                     # --- URL ---
                     href = title_elem.get_attribute('href') if title_elem else None
+                    # Sponsored deals use /azpp redirect — find actual thread link
+                    if href and '/azpp' in href:
+                        alt_link = card.query_selector('a[href*="/f/"]')
+                        if alt_link:
+                            href = alt_link.get_attribute('href')
                     deal_url = self.make_absolute_url(href)
                     if not deal_url:
                         continue
@@ -330,10 +335,13 @@ class SlickdealsScraper:
                     source_deal_id = card.get_attribute('data-threadid')
                     if not source_deal_id:
                         source_deal_id = self.extract_deal_id_from_url(href)
+                    # If still an ad URL, construct thread URL from ID
+                    if source_deal_id and deal_url and '/azpp' in deal_url:
+                        deal_url = f"{self.base_url}/f/{source_deal_id}"
 
                     # --- Image ---
                     img_elem = card.query_selector('img.dealCard__image')
-                    image_url = img_elem.get_attribute('src') if img_elem else None
+                    image_url = self.make_absolute_url(img_elem.get_attribute('src')) if img_elem else None
 
                     # --- Price ---
                     price = None
