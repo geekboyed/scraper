@@ -75,6 +75,10 @@ A production web scraping and AI summarization system that collects business new
 - **Read/search operations allowed without confirmation**: All file reading (cat, head, tail, less), searching (grep, find, locate), listing (ls, tree), and inspection commands can be executed freely without asking for permission
 - **Destructive operations require confirmation**: Any commands that modify, delete, or move files (rm, mv, cp with overwrite) should be confirmed first
 
+### Git Operations
+- **NEVER run git commands automatically** — no auto-commit, no auto-push, no auto-add
+- Only run git commands when explicitly asked by the user
+
 ### AI API Configuration
 - **Primary**: 1min.ai (GPT-4o-mini) via MINAI_API_KEY
 - **Backup**: Anthropic Claude 3.5 Haiku via ANTHROPIC_API_KEY

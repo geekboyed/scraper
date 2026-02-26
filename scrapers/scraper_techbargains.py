@@ -273,8 +273,9 @@ class TechBargainsScraper:
         except Exception:
             return None
 
-    def generate_hash(self, text):
-        """Generate hash for duplicate detection"""
+    def generate_hash(self, product_name):
+        """Generate hash for duplicate detection using title + source"""
+        text = f"{self.source_id}{product_name}"
         return int(hashlib.md5(text.encode()).hexdigest()[:16], 16)
 
     def extract_price(self, text):
@@ -480,11 +481,14 @@ class TechBargainsScraper:
 
             for idx, deal in enumerate(deals, 1):
                 try:
-                    hash_text = f"{deal['product_name']}{deal.get('deal_url', '')}"
-                    content_hash = self.generate_hash(hash_text)
+                    content_hash = self.generate_hash(deal['product_name'])
 
-                    # Check duplicates
-                    cursor.execute("SELECT id FROM deals WHERE content_hash = %s", (content_hash,))
+                    # Check duplicates: hash OR same product_name+source_id
+                    cursor.execute(
+                        "SELECT id FROM deals WHERE content_hash = %s"
+                        " OR (source_id = %s AND product_name = %s)",
+                        (content_hash, self.source_id, deal['product_name'])
+                    )
                     if cursor.fetchone():
                         print(f"[{idx}/{len(deals)}] ⊘ Duplicate")
                         continue
