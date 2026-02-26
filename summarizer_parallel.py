@@ -109,7 +109,7 @@ class ParallelSummarizer:
         print(f"✓ Loaded {len(self.categories_cache)} categories ({level2_count} assignable)")
 
     def get_unsummarized_articles(self, limit=10):
-        """Get articles that need summaries, including failed articles eligible for retry with exponential backoff"""
+        """Get articles that need summaries, including failed articles eligible for retry with exponential backoff (max 5 attempts)"""
         cursor = self.connection.cursor(dictionary=True)
         cursor.execute("""
             SELECT a.id, a.title, a.url, a.fullArticle, a.summary_retry_count, s.mainCategory, s.name as source_name
@@ -117,11 +117,12 @@ class ParallelSummarizer:
             LEFT JOIN sources s ON a.source_id = s.id
             WHERE (a.summary IS NULL OR a.summary = '')
             AND (s.isActive = 'Y' OR s.id IS NULL)
+            AND (a.summary_retry_count IS NULL OR a.summary_retry_count < 5)
             AND (
                 -- Never attempted or not marked as failed
                 (a.isSummaryFailed IS NULL OR a.isSummaryFailed != 'Y')
                 OR
-                -- Failed but eligible for retry (only if article is less than 1 day old)
+                -- Failed but eligible for retry (only if article is less than 1 day old, max 5 attempts)
                 (a.isSummaryFailed = 'Y'
                     AND a.scraped_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
                     AND (
@@ -133,10 +134,17 @@ class ParallelSummarizer:
                         OR
                         -- Retry 3: after 12 hours (retry_count = 3)
                         (a.summary_retry_count = 3 AND a.summary_last_attempt < DATE_SUB(NOW(), INTERVAL 12 HOUR))
+                        OR
+                        -- Retry 4: after 24 hours (retry_count = 4, final attempt)
+                        (a.summary_retry_count = 4 AND a.summary_last_attempt < DATE_SUB(NOW(), INTERVAL 24 HOUR))
                     )
                 )
             )
-            ORDER BY a.scraped_at DESC
+            ORDER BY
+                -- First-time articles first (never failed), retries last
+                CASE WHEN (a.isSummaryFailed IS NULL OR a.isSummaryFailed != 'Y') THEN 0 ELSE 1 END,
+                -- Within each group, newest articles first
+                a.scraped_at DESC
             LIMIT %s
         """, (limit,))
         articles = cursor.fetchall()
@@ -963,25 +971,32 @@ Return ONLY the category names separated by commas (1-3 categories, exact names 
             return False
 
     def mark_article_failed(self, article_id, retry_count=0):
-        """Mark article as failed and track retry attempts with exponential backoff"""
+        """Mark article as failed and track retry attempts with exponential backoff (max 5 attempts)"""
         try:
             with self.db_lock:
                 conn = mysql.connector.connect(**self.db_config)
                 cursor = conn.cursor()
                 cursor.execute("SET time_zone = '-08:00'")
 
+                new_retry_count = retry_count + 1
+
                 # Increment retry count and update last attempt time
                 cursor.execute("""
                     UPDATE articles
                     SET isSummaryFailed = 'Y',
-                        summary_retry_count = %s + 1,
+                        summary_retry_count = %s,
                         summary_last_attempt = NOW()
                     WHERE id = %s
-                """, (retry_count, article_id))
+                """, (new_retry_count, article_id))
 
                 conn.commit()
                 cursor.close()
                 conn.close()
+
+                # Log if article has reached max attempts
+                if new_retry_count >= 5:
+                    print(f"  ⊗ Article marked inactive after {new_retry_count} failed attempts")
+
                 return True
 
         except Error as e:
@@ -991,7 +1006,10 @@ Return ONLY the category names separated by commas (1-3 categories, exact names 
         """Process a single article"""
         try:
             retry_count = article.get('summary_retry_count', 0)
-            retry_note = f" (retry {retry_count})" if retry_count > 0 else ""
+            if retry_count > 0:
+                retry_note = f" (retry {retry_count}/4 - {'FINAL ATTEMPT' if retry_count == 4 else 'attempt ' + str(retry_count + 1) + '/5'})"
+            else:
+                retry_note = " (attempt 1/5)"
             source_name = article.get('source_name', 'Unknown')
             counter_str = f"[{counter}] " if counter else ""
             print(f"{counter_str}[{source_name}] {article['title'][:50]}...{retry_note}")
@@ -1050,7 +1068,7 @@ Return ONLY the category names separated by commas (1-3 categories, exact names 
             self.mark_article_failed(article['id'], retry_count)
             return False
 
-    def run(self, batch_size=30, max_workers=5):
+    def run(self, batch_size=75, max_workers=5):
         """Run parallel processing"""
         print("=" * 60)
         print(f"Parallel Article Summarizer ({' → '.join(self.provider_order)})")
@@ -1088,7 +1106,7 @@ Return ONLY the category names separated by commas (1-3 categories, exact names 
             self.connection.close()
 
 if __name__ == "__main__":
-    batch_size = int(sys.argv[1]) if len(sys.argv) > 1 else 30
+    batch_size = int(sys.argv[1]) if len(sys.argv) > 1 else 75
     max_workers = int(sys.argv[2]) if len(sys.argv) > 2 else 5
 
     summarizer = ParallelSummarizer()

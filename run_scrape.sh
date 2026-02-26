@@ -3,6 +3,9 @@
 
 cd "$(dirname "$0")"
 
+# Ensure user-installed Python packages are visible (e.g. when run as www-data via Apache)
+export PYTHONPATH="/home/user1/.local/lib/python3.12/site-packages:${PYTHONPATH}"
+
 # Lock file to prevent multiple instances
 LOCKFILE="/tmp/scraper.lock"
 
@@ -27,20 +30,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Create virtual environment if it doesn't exist
-if [ ! -d "venv" ]; then
-    echo "Creating virtual environment..."
-    python3 -m venv venv
-    source venv/bin/activate
-    pip install -q -r requirements.txt
-else
-    source venv/bin/activate
-fi
-
 echo "======================================"
 echo "Fast Article Scraper"
 echo "======================================"
 
 python3 scrapers/scraper_curl.py
+python3 scrapers/scraper_marketwatch_rss.py
 
-deactivate
+echo "======================================"
+echo "Deal Scrapers"
+echo "======================================"
+
+python3 scrapers/scraper_slickdeals.py
+python3 scrapers/scraper_befrugal.py
+python3 scrapers/scraper_freebieguy.py
+python3 scrapers/scraper_techbargains.py
+
+echo "======================================"
+echo "Deal Image Finder"
+echo "======================================"
+
+./run_deal_images.sh

@@ -27,16 +27,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Create virtual environment if it doesn't exist
-if [ ! -d "venv" ]; then
-    echo "Creating virtual environment..."
-    python3 -m venv venv
-    source venv/bin/activate
-    pip install -q -r requirements.txt
-else
-    source venv/bin/activate
-fi
-
 echo "======================================"
 echo "Deal Image Adder"
 echo "$(date)"
@@ -44,5 +34,3 @@ echo "======================================"
 
 # Process 50 deals per run with 3-second delay (free scraping method)
 python3 scripts/add_deal_images.py --limit 50 --delay 3
-
-deactivate

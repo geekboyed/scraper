@@ -65,6 +65,8 @@ class SlickdealsScraper:
 
     def should_scrape(self):
         """Check if enough time has passed since last scrape"""
+        if os.environ.get('FORCE_SCRAPE') == '1':
+            return True  # Bypass rate limit (manual scrape)
         try:
             cursor = self.connection.cursor(dictionary=True)
             cursor.execute("""
@@ -110,17 +112,136 @@ class SlickdealsScraper:
 
     # Category mappings for deal subcategorization
     CATEGORY_KEYWORDS = {
+        56: [  # Entertainment & Media — before Electronics so PS5/Xbox route here
+            'playstation', 'ps5', 'ps4', 'xbox series', 'xbox one', 'nintendo switch',
+            'steam deck', 'game pass', 'video game', 'blu-ray', '4k uhd',
+            'dvd', 'vinyl record', 'board game', 'trading card',
+        ],
+        61: [  # Computers
+            'laptop', 'notebook', 'ultrabook', 'chromebook',
+            'desktop pc', 'desktop computer', 'all-in-one pc',
+            'macbook', 'mac mini', 'mac pro', 'imac',
+            'gaming pc', 'gaming laptop', 'gaming desktop',
+            'computer build', 'mini pc',
+            'processor', 'cpu', 'intel core', 'amd ryzen', 'amd threadripper',
+            'motherboard', 'gpu', 'graphics card', 'nvidia rtx', 'amd radeon',
+            'ddr4', 'ddr5', 'memory module', 'ddr ram',
+            'ssd', 'nvme', 'm.2 drive', 'hard drive', 'hdd', '2.5" ssd',
+            'computer case', 'pc case', 'atx case',
+            'cpu cooler', 'liquid cooling', 'air cooler',
+            'power supply', 'psu', '80+ gold',
+            'monitor', '4k monitor', 'gaming monitor', '144hz', '240hz',
+            'keyboard', 'mechanical keyboard', 'gaming keyboard',
+            'mouse', 'gaming mouse', 'wireless mouse',
+            'webcam', 'usb hub', 'laptop bag', 'laptop stand',
+        ],
         50: [  # Electronics
-            'phone', 'laptop', 'tablet', 'tv', 'computer', 'headphone',
-            'camera', 'gaming', 'console', 'speaker', 'watch', 'tech',
+            'phone', 'tablet', 'television', 'oled', 'qled',
+            'headphone', 'earbuds', 'airpods',
+            'camera', 'speaker', 'smartwatch', 'fitness tracker', 'smart tv',
+            'tech', 'electronics', 'gadget', 'microphone', 'smart home', 'alexa', 'echo', 'google home',
+            'nest', 'ring doorbell', 'drone', 'projector', 'dash cam',
+            'router', 'wifi', 'modem', 'network switch',
+            'hdmi', 'thunderbolt', 'charger', 'power bank',
+            'printer', 'scanner', 'surge protector',
+            'iphone', 'ipad', 'android', 'pixel phone',
+            'samsung galaxy', 'lg oled', 'tcl tv',
         ],
-        49: [  # Food
-            'food', 'snack', 'cereal', 'coffee', 'grocery', 'meal',
-            'restaurant', 'burger', 'pizza', 'kitchen', 'cookware', 'appliance',
+        53: [  # Clothing & Apparel
+            'shirt', 'pants', 'jacket', 'dress', 'shoe', 'boot', 'sneaker',
+            'sock', 'underwear', 'hoodie', 'coat', 'sweater', 'jeans', 'shorts',
+            'legging', 'swimsuit', 'hat', 'cap', 'glove', 'scarf', 'vest',
+            'blazer', 'suit', 'polo', 'clothing', 'apparel', 'fashion',
+            'nike ', 'adidas', 'under armour', 'north face', 'columbia jacket',
+            'patagonia', 'new balance', "levi's", 'gap ', 'old navy',
         ],
-        52: [  # Gardening
-            'garden', 'plant', 'lawn', 'outdoor', 'patio', 'grill',
-            'bbq', 'seed', 'tool',
+        55: [  # Health & Beauty
+            'vitamin', 'supplement', 'probiotic', 'collagen', 'omega-3',
+            'toothpaste', 'toothbrush', 'shampoo', 'conditioner', 'lotion',
+            'skincare', 'moisturizer', 'sunscreen', 'face wash', 'serum',
+            'deodorant', 'razor', 'hair dryer', 'beard',
+            'first aid', 'bandage', 'ibuprofen', 'tylenol', 'advil', 'zyrtec',
+            'lip balm', 'protein powder', 'creatine', 'pre-workout',
+            'allergy relief', 'cold medicine', 'cough syrup',
+            'body wash', 'hand sanitizer', 'dental floss', 'mouthwash',
+            'blood pressure monitor', 'thermometer', 'pulse oximeter',
+        ],
+        54: [  # Home & Kitchen
+            'vacuum', 'robot vacuum', 'mop', 'broom', 'cleaning supply',
+            'blender', 'air fryer', 'instant pot', 'slow cooker', 'coffee maker',
+            'espresso', 'keurig', 'nespresso',
+            'knife set', 'cutting board', 'nonstick pan', 'cast iron', 'skillet',
+            'bedding', 'pillow', 'mattress', 'sheet set', 'blanket', 'comforter',
+            'furniture', 'office chair', 'standing desk', 'bookshelf',
+            'storage bin', 'organizer', 'drawer', 'lamp', 'led strip',
+            'curtain', 'area rug', 'bath towel', 'shower curtain',
+            'ceiling fan', 'air purifier', 'humidifier', 'dehumidifier', 'space heater',
+            'trash can', 'toilet paper', 'paper towel', 'dish soap',
+            'picture frame', 'wall art', 'welcome mat',
+        ],
+        49: [  # Food & Grocery
+            'food', 'snack', 'cereal', 'coffee bean', 'grocery',
+            'burger', 'pizza', 'candy', 'chocolate', 'cookie', 'chips',
+            'popcorn', 'energy drink', 'soda', 'sparkling water', 'juice',
+            'tea bag', 'sauce', 'seasoning', 'olive oil', 'spice',
+            'almond', 'cashew', 'jerky', 'granola bar', 'trail mix',
+            'frozen meal', 'instant noodle', 'ramen',
+            'baking mix', 'flour', 'sugar',
+        ],
+        57: [  # Sports & Outdoors
+            'gym equipment', 'yoga mat', 'dumbbell', 'barbell', 'weight plate',
+            'treadmill', 'elliptical', 'stationary bike', 'rowing machine',
+            'hiking boot', 'camping', 'backpacking', 'tent', 'sleeping bag',
+            'mountain bike', 'road bike', 'cycling', 'bicycle',
+            'golf club', 'tennis racket', 'pickleball', 'basketball',
+            'fishing rod', 'hunting', 'archery',
+            'ski', 'snowboard', 'surfboard',
+            'resistance band', 'jump rope', 'pull-up bar',
+            'water bottle', 'hydration pack',
+            'rock climbing', 'kayak', 'canoe', 'paddle board',
+            'sports bag', 'athletic',
+        ],
+        58: [  # Tools & Hardware
+            'power drill', 'circular saw', 'jigsaw', 'reciprocating saw',
+            'screwdriver set', 'wrench set', 'socket set', 'hex key',
+            'hammer', 'plier', 'wire stripper', 'multimeter',
+            'cordless tool', 'dewalt', 'milwaukee tool', 'makita', 'ryobi',
+            'ladder', 'workbench', 'toolbox', 'tool bag',
+            'measuring tape', 'laser level', 'stud finder',
+            'air compressor', 'nail gun', 'staple gun',
+            'extension cord', 'power strip',
+            'sandpaper', 'paint roller', 'caulk gun',
+            'pipe wrench', 'pipe fitting',
+        ],
+        59: [  # Automotive
+            'motor oil', 'engine oil', 'oil filter', 'air filter', 'cabin filter',
+            'car wash kit', 'car wax', 'detailing',
+            'car floor mat', 'seat cover', 'car cover',
+            'jump starter', 'battery charger booster',
+            'wiper blade', 'windshield', 'car sun shade',
+            'brake pad', 'rotor',
+            'car phone mount', 'car charger',
+            'tow strap', 'trailer hitch',
+            'tire inflator', 'tire pressure',
+            'truck bed', 'cargo net', 'roof rack',
+        ],
+        52: [  # Gardening & Outdoor Home
+            'garden hose', 'plant pot', 'garden tool', 'lawn mower',
+            'weed eater', 'leaf blower', 'chainsaw', 'hedge trimmer',
+            'grass seed', 'fertilizer', 'soil', 'mulch', 'compost',
+            'sprinkler', 'drip irrigation', 'watering can',
+            'patio furniture', 'adirondack', 'hammock',
+            'outdoor grill', 'bbq', 'smoker', 'fire pit',
+            'shed', 'pergola', 'raised garden bed',
+            'bird feeder', 'bird bath',
+        ],
+        60: [  # Memberships & Services
+            'gift card', 'membership', 'subscription',
+            'amazon prime', "sam's club", 'costco', 'walmart+',
+            'disney+', 'hbo max', 'peacock', 'paramount+',
+            'spotify premium', 'apple music', 'youtube premium',
+            'annual plan', 'prepaid card', 'visa gift',
+            'xbox game pass', 'playstation plus', 'nintendo online',
         ],
     }
     DEFAULT_CATEGORY = 48  # General Deals
@@ -133,8 +254,11 @@ class SlickdealsScraper:
         """
         name_lower = product_name.lower()
         for category_id, keywords in self.CATEGORY_KEYWORDS.items():
-            if any(kw in name_lower for kw in keywords):
-                return category_id
+            for kw in keywords:
+                # Use word-boundary matching to avoid substring false positives
+                # (e.g. 'ram' in 'ceramic', 'monitor' in 'monitoring')
+                if re.search(r'\b' + re.escape(kw.strip()) + r'\b', name_lower):
+                    return category_id
         return self.DEFAULT_CATEGORY
 
     def generate_hash(self, text):
@@ -347,6 +471,20 @@ class SlickdealsScraper:
                     if comment_elem:
                         comments_count = self.extract_int(comment_elem.inner_text())
 
+                    # --- Store name (sidebar) ---
+                    store = None
+                    for store_sel in [
+                        '.sidebarDealsRedesign__store',
+                        '.sidebarDealsRedesign__storeName',
+                        '.sidebarDealsRedesign__merchant',
+                        'a[data-type="store"]',
+                    ]:
+                        store_elem = item.query_selector(store_sel)
+                        if store_elem:
+                            store = store_elem.inner_text().strip() or None
+                            if store:
+                                break
+
                     # --- Price (extracted from title text) ---
                     price = None
                     price_text = None
@@ -362,7 +500,7 @@ class SlickdealsScraper:
                         'price_text': price_text,
                         'original_price': None,
                         'discount_percentage': None,
-                        'store_name': None,
+                        'store_name': store,
                         'image_url': None,
                         'description': None,
                         'category': 'Popular',

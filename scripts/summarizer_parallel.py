@@ -573,7 +573,7 @@ Return ONLY category names separated by commas (up to 3):"""
             self.mark_article_failed(article['id'])
             return False
 
-    def run(self, batch_size=20, max_workers=5):
+    def run(self, batch_size=75, max_workers=5):
         """Run parallel processing"""
         print("=" * 60)
         print(f"Parallel Article Summarizer ({' → '.join(self.provider_order)})")
@@ -610,7 +610,7 @@ Return ONLY category names separated by commas (up to 3):"""
             self.connection.close()
 
 if __name__ == "__main__":
-    batch_size = int(sys.argv[1]) if len(sys.argv) > 1 else 20
+    batch_size = int(sys.argv[1]) if len(sys.argv) > 1 else 75
     max_workers = int(sys.argv[2]) if len(sys.argv) > 2 else 5
 
     summarizer = ParallelSummarizer()

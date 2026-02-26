@@ -14,7 +14,7 @@ A production web scraping and AI summarization system that collects business new
 
 ## Project Structure
 ```
-/var/www/html/BIScrape/
+/var/www/html/scraper/
 ├── index.php                          # Main web interface
 ├── scraper_*.py                       # Source-specific scrapers
 ├── summarizer_parallel.py             # AI-powered parallel summarizer
@@ -39,7 +39,7 @@ A production web scraping and AI summarization system that collects business new
   /tmp/test_scraper.py
 
   # Bad - test in project root
-  /var/www/html/BIScrape/test_api.py  # Don't do this
+  /var/www/html/scraper/test_api.py  # Don't do this
   ```
 
 ### Code Practices
@@ -82,9 +82,12 @@ A production web scraping and AI summarization system that collects business new
 - Test new keys before deploying to production
 
 ### Cron Schedule
-- **Scraper**: Every 10 minutes (`*/10 * * * *`)
-- **Summarizer**: Every hour at :10 (`10 * * * *`)
-- Logs written to `/var/www/html/scraper/logs/`
+- **This is a dev server (not always active)** — all scheduled tasks run on server2
+- Do NOT add any cron entries here
+- Intended schedule on server2:
+  - Scraper (`run_scrape.sh`): every 10 minutes (`*/10 * * * *`) — also calls `run_deal_images.sh` inline
+  - Summarizer (`run_summarize_parallel.sh`): every hour at :10 (`10 * * * *`)
+- Logs written to `/var/log/scraper/`
 
 ### Summary Requirements
 - Target length: 200-300 words

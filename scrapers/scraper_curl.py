@@ -495,6 +495,8 @@ class CurlScraper:
 
     def should_scrape_source(self, source):
         """Check if enough time has passed since last scrape"""
+        if os.environ.get('FORCE_SCRAPE') == '1':
+            return True  # Bypass rate limit (manual scrape)
         if not source.get('last_scraped_at'):
             return True  # Never scraped before
 
@@ -609,24 +611,6 @@ class CurlScraper:
 
         if self.connection:
             self.connection.close()
-
-        # Run Slickdeals scraper
-        try:
-            print(f"\n{'=' * 60}")
-            print("Running Slickdeals Scraper")
-            print(f"{'=' * 60}")
-
-            from scraper_slickdeals import SlickdealsScraper
-            deals_scraper = SlickdealsScraper()
-            deals_saved = deals_scraper.run()
-
-            if deals_saved > 0:
-                print(f"\n✓ Saved {deals_saved} new deals")
-
-        except ImportError:
-            print("⚠ Slickdeals scraper not available")
-        except Exception as e:
-            print(f"⚠ Deals scraper error: {e}")
 
 if __name__ == "__main__":
     scraper = CurlScraper()

@@ -33,6 +33,27 @@ if ($current_user && $current_user['preferenceJSON']) {
     }
 }
 
+// Helper function to calculate "time ago" from a datetime
+function time_ago($datetime_str) {
+    if (empty($datetime_str)) {
+        return '';
+    }
+
+    $dt = new DateTime($datetime_str);
+    $dt->setTimezone(new DateTimeZone('America/Los_Angeles'));
+    $now = new DateTime('now', new DateTimeZone('America/Los_Angeles'));
+
+    $diff = $now->getTimestamp() - $dt->getTimestamp();
+
+    if ($diff < 3600) {
+        return '<1 hour';
+    } elseif ($diff < 86400) {
+        return 'today';
+    } else {
+        return '>1 day';
+    }
+}
+
 // Load level 1 (parent) categories for dynamic UI
 $level1_categories = get_level1_categories($conn);
 $categories_grouped = get_categories_grouped($conn);
@@ -175,6 +196,15 @@ if ($deals_filter) {
         $where[] = "d.source_id IN ($placeholders)";
         foreach ($source_filter as $src_id) {
             $params[] = $src_id;
+        }
+    }
+
+    // Category filter
+    if (!empty($category_filter)) {
+        $placeholders = implode(',', array_fill(0, count($category_filter), '?'));
+        $where[] = "EXISTS (SELECT 1 FROM deal_categories dc WHERE dc.deal_id = d.id AND dc.category_id IN ($placeholders))";
+        foreach ($category_filter as $cat_id) {
+            $params[] = $cat_id;
         }
     }
 
@@ -1719,36 +1749,66 @@ if (!empty($cat_params)) {
         }
 
         function startSummarize() {
+            console.log('startSummarize() called');
             const btn = document.getElementById('summarizeBtn');
             const icon = document.getElementById('summarizeIcon');
             const text = document.getElementById('summarizeText');
+
+            if (!btn || !icon || !text) {
+                console.error('Button elements not found');
+                alert('Error: Button elements not found');
+                return;
+            }
 
             // Disable button and show animated spinner
             btn.disabled = true;
             icon.className = 'spinner-icon';
             icon.textContent = '⚙️';
-            text.textContent = 'Summarizing...';
+            text.textContent = 'Starting...';
 
             // Store initial count
             const initialCount = <?php echo $unsummarized_count; ?>;
+            console.log('Initial unsummarized count:', initialCount);
+
+            if (initialCount === 0) {
+                icon.textContent = '✓';
+                text.textContent = 'Nothing to summarize';
+                btn.disabled = false;
+                setTimeout(() => {
+                    text.textContent = 'Summarize (0)';
+                    icon.textContent = '📝';
+                }, 2000);
+                return;
+            }
 
             // Call API to start background process
+            console.log('Calling api_summarize.php...');
             fetch('api_summarize.php')
-                .then(response => response.json())
+                .then(response => {
+                    console.log('API response status:', response.status);
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
                 .then(data => {
+                    console.log('API response data:', data);
                     if (data.success) {
+                        text.textContent = 'Summarizing...';
+
                         // Keep spinner going and poll for completion
                         let pollCount = 0;
                         const maxPolls = 60; // 60 * 2 seconds = 2 minutes max
 
                         const pollInterval = setInterval(() => {
                             pollCount++;
+                            console.log('Poll attempt:', pollCount);
 
                             // Check if max time exceeded
                             if (pollCount >= maxPolls) {
                                 clearInterval(pollInterval);
                                 icon.textContent = '✓';
-                                text.textContent = 'Complete!';
+                                text.textContent = 'Timeout - Refreshing...';
                                 setTimeout(() => {
                                     window.location.reload();
                                 }, 1000);
@@ -1757,8 +1817,14 @@ if (!empty($cat_params)) {
 
                             // Poll database for unsummarized count
                             fetch('api_get_unsummarized_count.php')
-                                .then(r => r.json())
+                                .then(r => {
+                                    if (!r.ok) {
+                                        throw new Error(`HTTP error! status: ${r.status}`);
+                                    }
+                                    return r.json();
+                                })
                                 .then(countData => {
+                                    console.log('Current count:', countData.count);
                                     const currentCount = countData.count || 0;
 
                                     // Update button text with progress
@@ -1771,7 +1837,9 @@ if (!empty($cat_params)) {
                                     if (currentCount === 0 || (initialCount > 0 && currentCount < initialCount * 0.2)) {
                                         clearInterval(pollInterval);
                                         icon.textContent = '✓';
-                                        text.textContent = `Complete! (${initialCount - currentCount})`;
+                                        const processed = initialCount - currentCount;
+                                        text.textContent = `Complete! (${processed})`;
+                                        console.log('Summarization complete!');
                                         setTimeout(() => {
                                             window.location.reload();
                                         }, 1500);
@@ -1779,19 +1847,22 @@ if (!empty($cat_params)) {
                                 })
                                 .catch(err => {
                                     console.error('Poll error:', err);
+                                    // Don't stop polling on individual poll errors
                                 });
                         }, 2000); // Poll every 2 seconds
                     } else {
+                        console.error('API returned success=false');
                         icon.textContent = '✗';
-                        text.textContent = 'Error';
+                        text.textContent = 'Error - Try again';
                         btn.disabled = false;
                     }
                 })
                 .catch(error => {
-                    icon.textContent = '✗';
-                    text.textContent = 'Error';
-                    btn.disabled = false;
                     console.error('Summarize error:', error);
+                    icon.textContent = '✗';
+                    text.textContent = 'Error - Try again';
+                    btn.disabled = false;
+                    alert('Error starting summarizer: ' + error.message);
                 });
         }
 
@@ -2338,6 +2409,15 @@ if (!empty($cat_params)) {
         function applyFilters() {
             const params = new URLSearchParams();
 
+            // Preserve active parent filter (deals=1, tech=1, business=1, etc.)
+            const parentFilters = ['deals', 'tech', 'business', 'sports', 'general'];
+            const currentParams = new URLSearchParams(window.location.search);
+            parentFilters.forEach(key => {
+                if (currentParams.get(key) === '1') {
+                    params.set(key, '1');
+                }
+            });
+
             // Collect selected sources
             const totalSources = document.querySelectorAll('.source-filter').length;
             const checkedSources = document.querySelectorAll('.source-filter:checked');
@@ -2772,6 +2852,18 @@ if (!empty($cat_params)) {
                 ];
             }
             ?>
+            <?php
+            // Build URL prefix to preserve the active parent filter (e.g. "deals=1&") in subcategory links
+            $parent_url_prefix = '';
+            if ($active_parent_filter) {
+                foreach ($parent_filter_map as $param => $name) {
+                    if ($name === $active_parent_filter) {
+                        $parent_url_prefix = $param . '=1&';
+                        break;
+                    }
+                }
+            }
+            ?>
             <div class="quick-filters-row" style="margin-bottom: 8px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
                 <a href="?date=1day"
                    class="btn"
@@ -2800,7 +2892,7 @@ if (!empty($cat_params)) {
                     <?php if (!empty($child_details)): ?>
                     <div id="dropdown-<?php echo htmlspecialchars($slug); ?>" class="category-dropdown" style="display: none; position: absolute; top: 100%; left: 0; margin-top: 5px; background: white; border: 2px solid #2563eb; border-radius: 6px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); min-width: 200px; z-index: 1000;">
                         <?php foreach ($child_details as $child): ?>
-                        <a href="?category[]=<?php echo $child['id']; ?>&date=1day"
+                        <a href="?<?php echo $parent_url_prefix; ?>category[]=<?php echo $child['id']; ?>&date=1day"
                            style="display: block; padding: 10px 15px; color: #334155; text-decoration: none; border-bottom: 1px solid #e0e0e0; transition: background 0.2s;"
                            onmouseover="this.style.background='#f1f5f9'"
                            onmouseout="this.style.background='white'">
@@ -3426,6 +3518,9 @@ if (!empty($cat_params)) {
                                                 $dt->setTimezone(new DateTimeZone('America/Los_Angeles'));
                                                 echo $dt->format('M d, Y g:i A') . ' PST';
                                             ?>
+                                            <div style="color: #10b981; font-size: 12px; margin-top: 4px; font-weight: 500;">
+                                                <?php echo time_ago($row['scraped_at']); ?>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -3447,6 +3542,9 @@ if (!empty($cat_params)) {
                                                 $dt->setTimezone(new DateTimeZone('America/Los_Angeles'));
                                                 echo $dt->format('M d, Y g:i A') . ' PST';
                                             ?>
+                                            <div style="color: #10b981; font-size: 12px; margin-top: 4px; font-weight: 500;">
+                                                <?php echo time_ago($row['scraped_at']); ?>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -3469,6 +3567,9 @@ if (!empty($cat_params)) {
                                         $dt->setTimezone(new DateTimeZone('America/Los_Angeles'));
                                         echo $dt->format('M d, Y g:i A') . ' PST';
                                     ?>
+                                    <div style="color: #10b981; font-size: 12px; margin-top: 4px; font-weight: 500;">
+                                        <?php echo time_ago($row['scraped_at']); ?>
+                                    </div>
                                 </div>
                             </div>
                         <?php endif; ?>
@@ -3728,7 +3829,7 @@ if (!empty($cat_params)) {
 
     <!-- Add Source Modal -->
     <div id="addSourceModal" class="modal">
-        <div class="modal-content" style="max-width: 550px;">
+        <div class="modal-content" style="max-width: 750px;">
             <div class="modal-header">
                 <h2>+ Add New Source</h2>
                 <div style="display: flex; gap: 10px; align-items: center;">

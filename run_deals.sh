@@ -1,5 +1,5 @@
 #!/bin/bash
-# Slickdeals Scraper - Runs every 30 minutes
+# Deal Scrapers - called from run_scrape.sh; this script is kept for manual use
 
 cd "$(dirname "$0")"
 
@@ -38,9 +38,12 @@ else
 fi
 
 echo "======================================"
-echo "Slickdeals Scraper"
+echo "Deal Scrapers"
 echo "======================================"
 
 python3 scrapers/scraper_slickdeals.py
+python3 scrapers/scraper_befrugal.py
+python3 scrapers/scraper_freebieguy.py
+python3 scrapers/scraper_techbargains.py
 
 deactivate

@@ -14,7 +14,7 @@ require_once __DIR__ . '/config.php';
 // Run scraper and capture output
 $log_dir = getenv('LOG_DIR') ?: '/var/log/scraper';
 $output_file = $log_dir . '/scrape_' . date('YmdHis') . '.log';
-$command = "cd " . escapeshellarg(__DIR__) . " && ./run_scrape.sh 2>&1 | tee " . escapeshellarg($output_file);
+$command = "cd " . escapeshellarg(__DIR__) . " && FORCE_SCRAPE=1 ./run_scrape.sh 2>&1 | tee " . escapeshellarg($output_file);
 
 // Execute and wait for completion
 exec($command, $output, $return_code);

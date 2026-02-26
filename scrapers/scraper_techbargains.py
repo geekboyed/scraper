@@ -15,6 +15,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 import hashlib
 import re
 from datetime import datetime
+from urllib.parse import urlparse, parse_qs, unquote
 
 class TechBargainsScraper:
     def __init__(self):
@@ -49,6 +50,8 @@ class TechBargainsScraper:
 
     def should_scrape(self):
         """Check if enough time has passed since last scrape"""
+        if os.environ.get('FORCE_SCRAPE') == '1':
+            return True  # Bypass rate limit (manual scrape)
         try:
             cursor = self.connection.cursor(dictionary=True)
             cursor.execute("""
@@ -94,17 +97,136 @@ class TechBargainsScraper:
 
     # Category mappings - Tech Bargains is primarily electronics
     CATEGORY_KEYWORDS = {
+        56: [  # Entertainment & Media — before Electronics so PS5/Xbox route here
+            'playstation', 'ps5', 'ps4', 'xbox series', 'xbox one', 'nintendo switch',
+            'steam deck', 'game pass', 'video game', 'blu-ray', '4k uhd',
+            'dvd', 'vinyl record', 'board game', 'trading card',
+        ],
+        61: [  # Computers
+            'laptop', 'notebook', 'ultrabook', 'chromebook',
+            'desktop pc', 'desktop computer', 'all-in-one pc',
+            'macbook', 'mac mini', 'mac pro', 'imac',
+            'gaming pc', 'gaming laptop', 'gaming desktop',
+            'computer build', 'mini pc',
+            'processor', 'cpu', 'intel core', 'amd ryzen', 'amd threadripper',
+            'motherboard', 'gpu', 'graphics card', 'nvidia rtx', 'amd radeon',
+            'ddr4', 'ddr5', 'memory module', 'ddr ram',
+            'ssd', 'nvme', 'm.2 drive', 'hard drive', 'hdd', '2.5" ssd',
+            'computer case', 'pc case', 'atx case',
+            'cpu cooler', 'liquid cooling', 'air cooler',
+            'power supply', 'psu', '80+ gold',
+            'monitor', '4k monitor', 'gaming monitor', '144hz', '240hz',
+            'keyboard', 'mechanical keyboard', 'gaming keyboard',
+            'mouse', 'gaming mouse', 'wireless mouse',
+            'webcam', 'usb hub', 'laptop bag', 'laptop stand',
+        ],
         50: [  # Electronics - primary category for this site
-            'phone', 'laptop', 'tablet', 'tv', 'computer', 'headphone',
-            'camera', 'gaming', 'console', 'speaker', 'watch', 'tech',
-            'electronics', 'gadget', 'monitor', 'keyboard', 'mouse',
-            'ssd', 'hard drive', 'ram', 'gpu', 'cpu', 'router'
+            'phone', 'tablet', 'television', 'oled', 'qled',
+            'headphone', 'earbuds', 'airpods',
+            'camera', 'speaker', 'smartwatch', 'fitness tracker', 'smart tv',
+            'tech', 'electronics', 'gadget', 'microphone', 'smart home', 'alexa', 'echo', 'google home',
+            'nest', 'ring doorbell', 'drone', 'projector', 'dash cam',
+            'router', 'wifi', 'modem', 'network switch',
+            'hdmi', 'thunderbolt', 'charger', 'power bank',
+            'printer', 'scanner', 'surge protector',
+            'iphone', 'ipad', 'android', 'pixel phone',
+            'samsung galaxy', 'lg oled', 'tcl tv',
         ],
-        49: [  # Food (rare on this site)
-            'food', 'snack', 'kitchen', 'appliance',
+        53: [  # Clothing & Apparel
+            'shirt', 'pants', 'jacket', 'dress', 'shoe', 'boot', 'sneaker',
+            'sock', 'underwear', 'hoodie', 'coat', 'sweater', 'jeans', 'shorts',
+            'legging', 'swimsuit', 'hat', 'cap', 'glove', 'scarf', 'vest',
+            'blazer', 'suit', 'polo', 'clothing', 'apparel', 'fashion',
+            'nike ', 'adidas', 'under armour', 'north face', 'columbia jacket',
+            'patagonia', 'new balance', "levi's", 'gap ', 'old navy',
         ],
-        52: [  # Gardening (rare on this site)
-            'garden', 'outdoor', 'tool',
+        55: [  # Health & Beauty
+            'vitamin', 'supplement', 'probiotic', 'collagen', 'omega-3',
+            'toothpaste', 'toothbrush', 'shampoo', 'conditioner', 'lotion',
+            'skincare', 'moisturizer', 'sunscreen', 'face wash', 'serum',
+            'deodorant', 'razor', 'hair dryer', 'beard',
+            'first aid', 'bandage', 'ibuprofen', 'tylenol', 'advil', 'zyrtec',
+            'lip balm', 'protein powder', 'creatine', 'pre-workout',
+            'allergy relief', 'cold medicine', 'cough syrup',
+            'body wash', 'hand sanitizer', 'dental floss', 'mouthwash',
+            'blood pressure monitor', 'thermometer', 'pulse oximeter',
+        ],
+        54: [  # Home & Kitchen
+            'vacuum', 'robot vacuum', 'mop', 'broom', 'cleaning supply',
+            'blender', 'air fryer', 'instant pot', 'slow cooker', 'coffee maker',
+            'espresso', 'keurig', 'nespresso',
+            'knife set', 'cutting board', 'nonstick pan', 'cast iron', 'skillet',
+            'bedding', 'pillow', 'mattress', 'sheet set', 'blanket', 'comforter',
+            'furniture', 'office chair', 'standing desk', 'bookshelf',
+            'storage bin', 'organizer', 'drawer', 'lamp', 'led strip',
+            'curtain', 'area rug', 'bath towel', 'shower curtain',
+            'ceiling fan', 'air purifier', 'humidifier', 'dehumidifier', 'space heater',
+            'trash can', 'toilet paper', 'paper towel', 'dish soap',
+            'picture frame', 'wall art', 'welcome mat',
+        ],
+        49: [  # Food & Grocery
+            'food', 'snack', 'cereal', 'coffee bean', 'grocery',
+            'burger', 'pizza', 'candy', 'chocolate', 'cookie', 'chips',
+            'popcorn', 'energy drink', 'soda', 'sparkling water', 'juice',
+            'tea bag', 'sauce', 'seasoning', 'olive oil', 'spice',
+            'almond', 'cashew', 'jerky', 'granola bar', 'trail mix',
+            'frozen meal', 'instant noodle', 'ramen',
+            'baking mix', 'flour', 'sugar',
+        ],
+        57: [  # Sports & Outdoors
+            'gym equipment', 'yoga mat', 'dumbbell', 'barbell', 'weight plate',
+            'treadmill', 'elliptical', 'stationary bike', 'rowing machine',
+            'hiking boot', 'camping', 'backpacking', 'tent', 'sleeping bag',
+            'mountain bike', 'road bike', 'cycling', 'bicycle',
+            'golf club', 'tennis racket', 'pickleball', 'basketball',
+            'fishing rod', 'hunting', 'archery',
+            'ski', 'snowboard', 'surfboard',
+            'resistance band', 'jump rope', 'pull-up bar',
+            'water bottle', 'hydration pack',
+            'rock climbing', 'kayak', 'canoe', 'paddle board',
+            'sports bag', 'athletic',
+        ],
+        58: [  # Tools & Hardware
+            'power drill', 'circular saw', 'jigsaw', 'reciprocating saw',
+            'screwdriver set', 'wrench set', 'socket set', 'hex key',
+            'hammer', 'plier', 'wire stripper', 'multimeter',
+            'cordless tool', 'dewalt', 'milwaukee tool', 'makita', 'ryobi',
+            'ladder', 'workbench', 'toolbox', 'tool bag',
+            'measuring tape', 'laser level', 'stud finder',
+            'air compressor', 'nail gun', 'staple gun',
+            'extension cord', 'power strip',
+            'sandpaper', 'paint roller', 'caulk gun',
+            'pipe wrench', 'pipe fitting',
+        ],
+        59: [  # Automotive
+            'motor oil', 'engine oil', 'oil filter', 'air filter', 'cabin filter',
+            'car wash kit', 'car wax', 'detailing',
+            'car floor mat', 'seat cover', 'car cover',
+            'jump starter', 'battery charger booster',
+            'wiper blade', 'windshield', 'car sun shade',
+            'brake pad', 'rotor',
+            'car phone mount', 'car charger',
+            'tow strap', 'trailer hitch',
+            'tire inflator', 'tire pressure',
+            'truck bed', 'cargo net', 'roof rack',
+        ],
+        52: [  # Gardening & Outdoor Home
+            'garden hose', 'plant pot', 'garden tool', 'lawn mower',
+            'weed eater', 'leaf blower', 'chainsaw', 'hedge trimmer',
+            'grass seed', 'fertilizer', 'soil', 'mulch', 'compost',
+            'sprinkler', 'drip irrigation', 'watering can',
+            'patio furniture', 'adirondack', 'hammock',
+            'outdoor grill', 'bbq', 'smoker', 'fire pit',
+            'shed', 'pergola', 'raised garden bed',
+            'bird feeder', 'bird bath',
+        ],
+        60: [  # Memberships & Services
+            'gift card', 'membership', 'subscription',
+            'amazon prime', "sam's club", 'costco', 'walmart+',
+            'disney+', 'hbo max', 'peacock', 'paramount+',
+            'spotify premium', 'apple music', 'youtube premium',
+            'annual plan', 'prepaid card', 'visa gift',
+            'xbox game pass', 'playstation plus', 'nintendo online',
         ],
     }
     DEFAULT_CATEGORY = 50  # Electronics (default for Tech Bargains)
@@ -117,9 +239,39 @@ class TechBargainsScraper:
         """
         name_lower = product_name.lower()
         for category_id, keywords in self.CATEGORY_KEYWORDS.items():
-            if any(kw in name_lower for kw in keywords):
-                return category_id
+            for kw in keywords:
+                # Use word-boundary matching to avoid substring false positives
+                # (e.g. 'ram' in 'ceramic', 'monitor' in 'monitoring')
+                if re.search(r'\b' + re.escape(kw.strip()) + r'\b', name_lower):
+                    return category_id
         return self.DEFAULT_CATEGORY
+
+    KNOWN_MERCHANTS = {
+        'amazon': 'Amazon', 'walmart': 'Walmart', 'bestbuy': 'Best Buy',
+        'newegg': 'Newegg', 'woot': 'Woot', 'costco': 'Costco',
+        'target': 'Target', 'homedepot': 'Home Depot', 'lowes': "Lowe's",
+        'ebay': 'eBay', 'bhphotovideo': 'B&H Photo', 'adorama': 'Adorama',
+        'staples': 'Staples', 'officedepot': 'Office Depot',
+        'microcenter': 'Micro Center', 'gamestop': 'GameStop',
+        'dell': 'Dell', 'hp': 'HP', 'lenovo': 'Lenovo', 'asus': 'ASUS',
+        'samsung': 'Samsung', 'acer': 'Acer',
+    }
+
+    def extract_merchant_from_url(self, tracking_url):
+        """Extract merchant name from TechBargains tracking URL's url= parameter"""
+        if not tracking_url:
+            return None
+        try:
+            params = parse_qs(urlparse(tracking_url).query)
+            if 'url' not in params:
+                return None
+            merchant_url = unquote(params['url'][0])
+            netloc = urlparse(merchant_url).netloc.lower().replace('www.', '')
+            parts = netloc.split('.')
+            key = parts[-2] if len(parts) >= 2 else parts[0]
+            return self.KNOWN_MERCHANTS.get(key, key.title())
+        except Exception:
+            return None
 
     def generate_hash(self, text):
         """Generate hash for duplicate detection"""
@@ -242,13 +394,18 @@ class TechBargainsScraper:
                             # Look for discount percentage
                             discount_pct = self.extract_discount(full_title)
 
-                            # Get image
-                            img_elem = element.query_selector('img')
+                            # Get image - check all img tags for a non-placeholder src
                             image_url = None
-                            if img_elem:
-                                image_url = img_elem.get_attribute('src') or img_elem.get_attribute('data-src')
-                                if image_url and not image_url.startswith('http'):
-                                    image_url = 'https:' + image_url if image_url.startswith('//') else (self.base_url + image_url)
+                            for img_elem in element.query_selector_all('img'):
+                                src = (img_elem.get_attribute('data-src') or
+                                       img_elem.get_attribute('data-lazy-src') or
+                                       img_elem.get_attribute('data-original') or
+                                       img_elem.get_attribute('src'))
+                                if src and 'image-default' not in src and 'placeholder' not in src:
+                                    if not src.startswith('http'):
+                                        src = 'https:' + src if src.startswith('//') else (self.base_url + src)
+                                    image_url = src
+                                    break
 
                             # Get description
                             description = None
@@ -268,6 +425,8 @@ class TechBargainsScraper:
                             if not price and not price_text:
                                 continue
 
+                            store_name = self.extract_merchant_from_url(deal_url)
+
                             deal = {
                                 'product_name': title[:500],
                                 'deal_url': deal_url,
@@ -276,7 +435,8 @@ class TechBargainsScraper:
                                 'image_url': image_url,
                                 'deal_type': 'tech_deal',
                                 'sale_price': price,
-                                'price_text': price_text
+                                'price_text': price_text,
+                                'store_name': store_name,
                             }
 
                             deals.append(deal)
@@ -333,8 +493,8 @@ class TechBargainsScraper:
                     cursor.execute("""
                         INSERT INTO deals
                         (source_id, product_name, deal_url, price, price_text,
-                         discount_percentage, description, image_url, deal_type, content_hash, scraped_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                         discount_percentage, description, image_url, deal_type, store_name, content_hash, scraped_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                     """, (
                         self.source_id,
                         deal['product_name'],
@@ -345,6 +505,7 @@ class TechBargainsScraper:
                         deal.get('description'),
                         deal.get('image_url'),
                         deal.get('deal_type', 'tech_deal'),
+                        deal.get('store_name'),
                         content_hash
                     ))
 
