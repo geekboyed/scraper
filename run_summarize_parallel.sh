@@ -25,5 +25,5 @@ cleanup() {
 trap cleanup EXIT
 
 # Run parallel summarizer
-# Args: batch_size (default 20), max_workers (default 5)
-python3 summarizer_parallel.py ${1:-20} ${2:-5}
+# Args: batch_size (default 76), max_workers (default 5)
+python3 summarizer_parallel.py ${1:-76} ${2:-5}
