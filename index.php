@@ -274,7 +274,7 @@ if (!$active_parent_filter && !empty($category_filter)) {
     }
 }
 
-if ($parent_filter_from_url && $active_parent_filter) {
+if ($parent_filter_from_url && $active_parent_filter && empty($category_filter)) {
     // Parent filter from URL (e.g. ?sports=1) - show all children of that parent
     $parent_id = get_parent_category_id($conn, $active_parent_filter);
     if ($parent_id) {
@@ -2863,9 +2863,11 @@ if (!empty($cat_params)) {
                     }
                 }
             }
+            // Build a URL date suffix that preserves current date filter (defaults to 1day)
+            $date_url_suffix = '&date=' . urlencode($date_filter ?: '1day');
             ?>
             <div class="quick-filters-row" style="margin-bottom: 8px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
-                <a href="?date=1day"
+                <a href="?date=<?php echo urlencode($date_filter ?: '1day'); ?>"
                    class="btn"
                    style="<?php echo (!$active_parent_filter && empty($category_filter)) ? 'background: #2563eb; color: white;' : 'background: #f8f9fa; color: #334155; border: 2px solid #2563eb;'; ?> padding: 12px 20px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
                     📰 All Articles
@@ -2879,7 +2881,7 @@ if (!empty($cat_params)) {
                     $child_details = isset($children_by_parent[$l1_cat['id']]) ? $children_by_parent[$l1_cat['id']] : [];
                 ?>
                 <div style="position: relative; display: inline-flex; align-items: stretch;">
-                    <a href="?<?php echo htmlspecialchars($slug); ?>=1&date=1day"
+                    <a href="?<?php echo htmlspecialchars($slug); ?>=1<?php echo $date_url_suffix; ?>"
                        class="btn category-main-btn"
                        style="<?php echo $is_active ? 'background: #2563eb; color: white;' : 'background: #f8f9fa; color: #334155; border: 2px solid #2563eb;'; ?> padding: 12px 16px 12px 20px; text-decoration: none; border-radius: 6px 0 0 6px; font-weight: 600; display: inline-flex; align-items: center; border-right: none; vertical-align: middle;">
                         <?php echo $icon; ?> <?php echo htmlspecialchars($l1_cat['name']); ?>
@@ -2892,7 +2894,7 @@ if (!empty($cat_params)) {
                     <?php if (!empty($child_details)): ?>
                     <div id="dropdown-<?php echo htmlspecialchars($slug); ?>" class="category-dropdown" style="display: none; position: absolute; top: 100%; left: 0; margin-top: 5px; background: white; border: 2px solid #2563eb; border-radius: 6px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); min-width: 200px; z-index: 1000;">
                         <?php foreach ($child_details as $child): ?>
-                        <a href="?<?php echo $parent_url_prefix; ?>category[]=<?php echo $child['id']; ?>&date=1day"
+                        <a href="?<?php echo $parent_url_prefix; ?>category[]=<?php echo $child['id']; ?><?php echo $date_url_suffix; ?>"
                            style="display: block; padding: 10px 15px; color: #334155; text-decoration: none; border-bottom: 1px solid #e0e0e0; transition: background 0.2s;"
                            onmouseover="this.style.background='#f1f5f9'"
                            onmouseout="this.style.background='white'">
@@ -2944,7 +2946,7 @@ if (!empty($cat_params)) {
                 </form>
             </div>
 
-            <!-- Line 2: Filter Button and Active Filters -->
+            <!-- Line 2: Filter Button, Active Filters, and Date Toggle -->
             <div style="margin-bottom: 5px;">
                 <div class="filter-controls-row" style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
                     <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
@@ -3146,6 +3148,32 @@ if (!empty($cat_params)) {
                             </div>
                         <?php endif; ?>
                 </div>
+
+                <!-- Date Range Toggle (right-aligned, next to search) -->
+                <div style="display: inline-flex; border: 2px solid #2563eb; border-radius: 6px; overflow: hidden; margin-left: auto;">
+                    <?php
+                    $cur_date = $date_filter ?: '1day';
+                    $date_base_params = [];
+                    if ($active_parent_filter) {
+                        $active_slug_d = isset($category_slug_map[$active_parent_filter]) ? $category_slug_map[$active_parent_filter] : strtolower($active_parent_filter);
+                        $date_base_params[] = htmlspecialchars($active_slug_d) . '=1';
+                    }
+                    foreach ($category_filter as $cid) { $date_base_params[] = 'category[]=' . $cid; }
+                    foreach ($source_filter as $sid)   { $date_base_params[] = 'source[]=' . $sid; }
+                    if ($search) { $date_base_params[] = 'search=' . urlencode($search); }
+                    $date_base = implode('&', $date_base_params);
+                    foreach ([['1day','1 Day'],['1week','1 Week']] as [$val, $label]):
+                        $is_active_date = ($cur_date === $val);
+                        $href = '?' . ($date_base ? $date_base . '&' : '') . 'date=' . $val;
+                    ?>
+                    <a href="<?php echo $href; ?>"
+                       style="padding: 10px 16px; font-weight: 600; font-size: 14px; text-decoration: none; white-space: nowrap;
+                              <?php echo $is_active_date ? 'background: #2563eb; color: white;' : 'background: #f8f9fa; color: #334155;'; ?>">
+                        <?php echo $label; ?>
+                    </a>
+                    <?php endforeach; ?>
+                </div>
+
             </div>
             </div>
         </div>

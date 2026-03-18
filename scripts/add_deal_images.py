@@ -130,15 +130,24 @@ class DealImageAdder:
                     if self.is_valid_image_url(src):
                         return src
 
-            # Method 2: Parse JavaScript data
+            # Method 2: Parse JavaScript data (use get_text() as fallback when .string is None)
             scripts = soup.find_all('script')
             for script in scripts:
-                if script.string and 'data:image' not in script.string:
+                text = script.string or script.get_text()
+                if text and 'data:image' not in text:
                     # Look for image URLs in the script
-                    matches = re.findall(r'https?://[^"\s]+\.(?:jpg|jpeg|png|webp)', script.string)
+                    matches = re.findall(r'https?://[^"\s\]]+\.(?:jpg|jpeg|png|webp)', text)
                     for match in matches:
                         if 'gstatic' not in match and self.is_valid_image_url(match):
                             return match
+
+            # Method 3: Full page text scan (catches URLs in JSON body blocks)
+            skip_domains = {'gstatic.com', 'encrypted-tbn', 'google.com/images'}
+            matches = re.findall(r'https?://[^"\s\]]+\.(?:jpg|jpeg|png|webp)', response.text)
+            for match in matches:
+                if not any(d in match for d in skip_domains):
+                    if self.is_valid_image_url(match):
+                        return match
 
             return None
 
