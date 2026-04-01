@@ -276,7 +276,7 @@ class ParallelSummarizer:
     def get_article_content(self, url):
         """Fetch comprehensive article content for detailed summarization"""
         # Force Playwright for JavaScript-heavy sites
-        if 'yahoo.com' in url.lower() or 'cnbc.com' in url.lower():
+        if 'yahoo.com' in url.lower():
             print(f"  → Using Playwright for JavaScript-heavy site")
             return self.get_article_content_playwright(url)
 
@@ -525,6 +525,26 @@ class ParallelSummarizer:
 
         except Exception as e:
             return None
+
+    def summarize_last_resort(self, title, content):
+        """Last-resort summarization via Anthropic when full content is unavailable (paywall/block).
+        Uses title + whatever teaser/excerpt is available. Targets ~200 chars (1-2 sentences)."""
+        if not self.anthropic_key:
+            return None
+        snippet = (content or '').strip()
+        if snippet:
+            prompt = f"Write a 1-2 sentence summary (under 200 characters) based only on this title and excerpt.\nTitle: {title}\nExcerpt: {snippet[:500]}\nSummary:"
+        else:
+            prompt = f"Write a 1-2 sentence summary (under 200 characters) based only on this article title.\nTitle: {title}\nSummary:"
+        try:
+            result = self.call_anthropic(prompt, max_tokens=80)
+            if result and len(result.strip()) > 10:
+                summary = result.strip()[:250]
+                print(f"  ↩ Last-resort Anthropic summary ({len(summary)} chars)")
+                return summary
+        except Exception as e:
+            print(f"  ✗ Last-resort Anthropic error: {e}")
+        return None
 
     def summarize_with_ai(self, title, content):
         """Summarize using AI providers in configured order - comprehensive 200+ word summary"""
@@ -1015,10 +1035,11 @@ Return ONLY the category names separated by commas (1-3 categories, exact names 
             print(f"{counter_str}[{source_name}] {article['title'][:50]}...{retry_note}")
 
             # Start with existing fullArticle if available
-            has_existing = article.get('fullArticle') and len(article['fullArticle']) > 200
-            content = article['fullArticle'] if has_existing else None
+            existing_content = article.get('fullArticle')
+            has_existing = existing_content and len(existing_content) >= 100
+            content = existing_content if has_existing else None
 
-            # Always try to fetch from URL (to get fresh content)
+            # Always try to fetch from URL (to get fresh/full content)
             url_content = self.get_article_content(article['url'])
 
             if url_content and len(url_content) > 200:
@@ -1033,8 +1054,15 @@ Return ONLY the category names separated by commas (1-3 categories, exact names 
                     return False
                 print(f"  → Using existing fullArticle ({len(content)} chars)")
             else:
-                # No content available
-                print(f"  ⊘ No content")
+                # No full content — try last-resort short summary via Anthropic
+                print(f"  ⊘ No full content — trying last-resort Anthropic summary")
+                short_teaser = (article.get('fullArticle') or '').strip()
+                summary = self.summarize_last_resort(article['title'], short_teaser)
+                if summary:
+                    categories = self.categorize_with_ai(article['title'], summary, article.get('mainCategory'))
+                    if self.update_article(article['id'], summary, categories, None):
+                        print(f"  ✓ Done (last-resort) - {', '.join(categories)}")
+                        return True
                 self.mark_article_failed(article['id'], retry_count)
                 return False
 

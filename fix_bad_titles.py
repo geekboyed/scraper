@@ -62,6 +62,7 @@ class TitleFixer:
         if not title:
             return True
 
+        title = title.strip()
         title_lower = title.lower()
 
         # Photographer credit patterns
@@ -79,6 +80,20 @@ class TitleFixer:
             'sipa usa',
         ]
 
+        bad_prefixes = [
+            'analysis',
+            'breaking news',
+            'for subscribers',
+            'live updates',
+            'gallery',
+            'illustration by',
+            'animation by',
+            'quiz',
+            'catch up',
+            'catch-up',
+            'cnn exclusive',
+        ]
+
         # Check if title is likely a photo credit
         for pattern in photo_patterns:
             if pattern in title_lower:
@@ -86,8 +101,20 @@ class TitleFixer:
                 if len(title) < 50 or title.count('/') >= 2:
                     return True
 
+        if title_lower in {'analysis', 'breaking news', 'gallery', 'live updates', '(video)'}:
+            return True
+
+        if title_lower.startswith(('from ', 'via ')) and len(title.split()) <= 4:
+            return True
+
+        if any(title_lower.startswith(prefix) and len(title) < 25 for prefix in bad_prefixes):
+            return True
+
+        if len(title.split()) <= 3 and any(char == '/' for char in title):
+            return True
+
         # Very short titles (likely incomplete)
-        if len(title) < 15:
+        if len(title) < 20:
             return True
 
         return False
@@ -199,9 +226,10 @@ Write ONLY the headline, nothing else:"""
             WHERE summary IS NOT NULL
             AND summary != ''
             AND LENGTH(summary) > 100
+            AND source_id = 47
             ORDER BY scraped_at DESC
             LIMIT %s
-        """, (limit * 3,))  # Get more to filter
+        """, (limit * 5,))  # Get more to filter
 
         articles = cursor.fetchall()
         cursor.close()

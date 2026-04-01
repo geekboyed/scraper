@@ -61,24 +61,9 @@ if ($action === 'update_max_uses') {
         exit;
     }
 
-    // Get current uses to validate
-    $stmt = $conn->prepare("SELECT current_uses FROM invite_codes WHERE id = ?");
-    $stmt->execute([$id]);
-    $code = $stmt->fetch();
-
-    if (!$code) {
-        echo json_encode(['success' => false, 'error' => 'Invite code not found']);
-        exit;
-    }
-
     $stmt = $conn->prepare("UPDATE invite_codes SET max_uses = ? WHERE id = ?");
 
     if ($stmt->execute([$max_uses, $id])) {
-        // Check if code should be marked as used/unused based on new max_uses
-        $is_used = $code['current_uses'] >= $max_uses ? 1 : 0;
-        $update_used = $conn->prepare("UPDATE invite_codes SET is_used = ? WHERE id = ?");
-        $update_used->execute([$is_used, $id]);
-
         echo json_encode(['success' => true, 'max_uses' => $max_uses]);
     } else {
         echo json_encode(['success' => false, 'error' => 'Failed to update max uses']);
@@ -89,17 +74,6 @@ if ($action === 'update_max_uses') {
 
 // Handle delete action
 if ($action === 'delete') {
-    // Check if code has been used
-    $stmt = $conn->prepare("SELECT current_uses FROM invite_codes WHERE id = ?");
-    $stmt->execute([$id]);
-    $code = $stmt->fetch();
-
-    if (!$code) {
-        echo json_encode(['success' => false, 'error' => 'Invite code not found']);
-        exit;
-    }
-
-    // Allow deletion even if used (admin decision)
     $stmt = $conn->prepare("DELETE FROM invite_codes WHERE id = ?");
 
     if ($stmt->execute([$id])) {

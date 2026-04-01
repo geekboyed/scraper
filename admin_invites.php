@@ -5,10 +5,6 @@
  * Restricted to admin users only
  */
 
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
-
 require_once 'config.php';
 require_once 'auth_check.php';
 
@@ -25,7 +21,7 @@ if (!$current_user || $current_user['isAdmin'] != 'Y') {
 }
 
 // Fetch all invite codes with creator and user info
-$query = "SELECT ic.id, ic.code, ic.is_used, ic.created_at, ic.used_at, ic.expires_at,
+$query = "SELECT ic.id, ic.code, (ic.current_uses >= ic.max_uses) AS is_used, ic.created_at, ic.used_at, ic.expires_at,
                  ic.current_uses, ic.max_uses, ic.isActive,
                  creator.username AS created_by_username,
                  GROUP_CONCAT(
@@ -36,7 +32,7 @@ $query = "SELECT ic.id, ic.code, ic.is_used, ic.created_at, ic.used_at, ic.expir
           FROM invite_codes ic
           LEFT JOIN users creator ON ic.created_by = creator.id
           LEFT JOIN users used_users ON used_users.invite_code_id = ic.id
-          GROUP BY ic.id, ic.code, ic.is_used, ic.created_at, ic.used_at, ic.expires_at,
+          GROUP BY ic.id, ic.code, ic.created_at, ic.used_at, ic.expires_at,
                    ic.current_uses, ic.max_uses, ic.isActive, creator.username
           ORDER BY ic.created_at DESC";
 $result = $conn->query($query);
@@ -44,9 +40,9 @@ $result = $conn->query($query);
 // Get counts
 $count_query = "SELECT
     COUNT(*) as total,
-    SUM(CASE WHEN is_used = 1 THEN 1 ELSE 0 END) as used,
-    SUM(CASE WHEN is_used = 0 AND (expires_at IS NULL OR expires_at > NOW()) THEN 1 ELSE 0 END) as available,
-    SUM(CASE WHEN is_used = 0 AND expires_at IS NOT NULL AND expires_at <= NOW() THEN 1 ELSE 0 END) as expired
+    SUM(CASE WHEN current_uses >= max_uses THEN 1 ELSE 0 END) as used,
+    SUM(CASE WHEN current_uses < max_uses AND isActive = 1 AND (expires_at IS NULL OR expires_at > NOW()) THEN 1 ELSE 0 END) as available,
+    SUM(CASE WHEN current_uses < max_uses AND expires_at IS NOT NULL AND expires_at <= NOW() THEN 1 ELSE 0 END) as expired
     FROM invite_codes";
 $counts = $conn->query($count_query)->fetch();
 ?>
@@ -507,6 +503,12 @@ $counts = $conn->query($count_query)->fetch();
                                             title="Click to toggle active status">
                                         <?php echo $row['isActive'] ? 'Active' : 'Inactive'; ?>
                                     </button>
+                                    <button class="badge"
+                                            onclick="deleteCode(<?= $row['id'] ?>, '<?= htmlspecialchars($row['code'], ENT_QUOTES) ?>')"
+                                            style="cursor:pointer; border:none; background:#f8d7da; color:#721c24; margin-left:6px;"
+                                            title="Delete this invite code">
+                                        Delete
+                                    </button>
                                 </div>
                             </td>
                             <td style="white-space: nowrap;">
@@ -643,15 +645,12 @@ $counts = $conn->query($count_query)->fetch();
     }
 
     function generateRandomCode() {
-        // Generate a random invite code (format: XXXX-XXXX-XXXX)
+        // Generate a random 6-char alphanumeric code
         const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
         let code = '';
-        for (let i = 0; i < 12; i++) {
-            if (i > 0 && i % 4 === 0) code += '-';
+        for (let i = 0; i < 6; i++) {
             code += chars.charAt(Math.floor(Math.random() * chars.length));
         }
-
-        // Display the code in the modal input field
         document.getElementById('modalCodeText').value = code;
     }
 
@@ -750,6 +749,26 @@ $counts = $conn->query($count_query)->fetch();
             alert('Error updating max uses: ' + error.message);
             document.getElementById('max-uses-' + id).value = document.getElementById('max-uses-' + id).defaultValue;
         });
+    }
+
+    function deleteCode(id, code) {
+        if (!confirm('Delete invite code ' + code + '? This cannot be undone.')) return;
+        const formData = new FormData();
+        formData.append('id', id);
+        formData.append('action', 'delete');
+        fetch('api_invite_update.php', {
+            method: 'POST',
+            body: formData
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                document.getElementById('code-row-' + id).remove();
+            } else {
+                alert('Error: ' + (data.error || 'Failed to delete'));
+            }
+        })
+        .catch(e => alert('Error: ' + e.message));
     }
 
     </script>

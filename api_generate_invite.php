@@ -31,14 +31,26 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit;
 }
 
-// Get code from POST data or generate a random one
-if (isset($_POST['code']) && !empty(trim($_POST['code']))) {
-    $code = trim($_POST['code']);
+/**
+ * Generate a cryptographically secure random 6-char alphanumeric code.
+ */
+function generateInviteCode($length = 6) {
+    $chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    $code = '';
+    for ($i = 0; $i < $length; $i++) {
+        $code .= $chars[random_int(0, strlen($chars) - 1)];
+    }
+    return $code;
+}
 
-    // Validate code (alphanumeric and dashes only, 3-50 chars)
-    if (!preg_match('/^[A-Za-z0-9\-]{3,50}$/', $code)) {
+// Get code from POST data or generate a random one
+if (isset($_POST['code']) && trim($_POST['code']) !== '') {
+    $code = strtoupper(trim($_POST['code']));
+
+    // Validate: 1-10 chars alphanumeric only
+    if (!preg_match('/^[A-Z0-9]{1,10}$/', $code)) {
         http_response_code(400);
-        echo json_encode(['error' => 'Invalid code format. Use only letters, numbers, and dashes (3-50 characters)']);
+        echo json_encode(['error' => 'Invalid code format. Use only letters and numbers (1-10 characters)']);
         exit;
     }
 
@@ -51,18 +63,22 @@ if (isset($_POST['code']) && !empty(trim($_POST['code']))) {
         exit;
     }
 } else {
-    // Generate a random 32-character hex code
-    $code = bin2hex(random_bytes(16));
+    // Generate a secure random 6-char alphanumeric code, retry on collision
+    $check = $conn->prepare("SELECT id FROM invite_codes WHERE code = ?");
+    do {
+        $code = generateInviteCode(6);
+        $check->execute([$code]);
+    } while ($check->fetch());
 }
 
 // Get max_uses from POST data (default to 1)
 $max_uses = isset($_POST['max_uses']) ? (int)$_POST['max_uses'] : 1;
 if ($max_uses < 1) {
-    $max_uses = 1; // Minimum 1 use
+    $max_uses = 1;
 }
 
 // Insert into database
-$stmt = $conn->prepare("INSERT INTO invite_codes (code, created_by, max_uses) VALUES (?, ?, ?)");
+$stmt = $conn->prepare("INSERT INTO invite_codes (code, created_by, max_uses, isActive) VALUES (?, ?, ?, 1)");
 
 if ($stmt->execute([$code, $current_user['id'], $max_uses])) {
     echo json_encode([

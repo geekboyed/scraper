@@ -13,13 +13,22 @@ if (!isset($conn)) {
 $current_user = null;
 
 if (isset($_COOKIE['user_session'])) {
-    $user_id = (int)$_COOKIE['user_session'];
-    if ($user_id > 0) {
-        $stmt = $conn->prepare("SELECT id, username, email, isAdmin, sourceCount, isActive, created_at, last_login, last_activity, session_count, total_hours, current_session_start, preferenceJSON FROM users WHERE id = ? AND isActive = 'Y'");
-        $stmt->execute([$user_id]);
+    $token = $_COOKIE['user_session'];
+    if (strlen($token) === 64 && ctype_xdigit($token)) {
+        $stmt = $conn->prepare(
+            "SELECT u.id, u.username, u.email, u.isAdmin, u.sourceCount, u.isActive,
+                    u.created_at, u.last_login, u.last_activity, u.session_count,
+                    u.total_hours, u.current_session_start, u.preferenceJSON
+             FROM user_sessions s
+             JOIN users u ON u.id = s.user_id
+             WHERE s.token = ? AND u.isActive = 'Y'
+               AND (s.expires_at IS NULL OR s.expires_at > NOW())"
+        );
+        $stmt->execute([$token]);
         $current_user = $stmt->fetch();
 
         if ($current_user) {
+            $user_id = $current_user['id'];
 
             // Track usage - 4-hour session blocks
             $now = new DateTime();

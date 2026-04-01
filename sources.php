@@ -166,16 +166,62 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $message = "Error: You do not have permission to deactivate this source";
             $message_type = "error";
         } else {
-            // Soft delete: set isActive='N' instead of removing the row
-            $stmt = $conn->prepare("UPDATE sources SET isActive = 'N' WHERE id = ?");
-
-            if ($stmt->execute([$id])) {
-                $message = "Source deactivated successfully!";
+            try {
+                // Remove article_categories for this source's articles
+                $conn->prepare("DELETE ac FROM article_categories ac JOIN articles a ON ac.article_id = a.id WHERE a.source_id = ?")->execute([$id]);
+                // Remove articles
+                $conn->prepare("DELETE FROM articles WHERE source_id = ?")->execute([$id]);
+                // Remove deal_categories for this source's deals
+                $conn->prepare("DELETE dc FROM deal_categories dc JOIN deals d ON dc.deal_id = d.id WHERE d.source_id = ?")->execute([$id]);
+                // Remove deals
+                $conn->prepare("DELETE FROM deals WHERE source_id = ?")->execute([$id]);
+                // Remove user links
+                $conn->prepare("DELETE FROM users_sources WHERE source_id = ?")->execute([$id]);
+                // Soft-delete the source
+                $conn->prepare("UPDATE sources SET isActive = 'N' WHERE id = ?")->execute([$id]);
+                $message = "Source deactivated and all related data removed.";
                 $message_type = "success";
-            } else {
-                $message = "Error: Failed to deactivate source";
+            } catch (PDOException $e) {
+                $message = "Error: " . $e->getMessage();
                 $message_type = "error";
             }
+        }
+    }
+
+    elseif ($action === 'hard_delete') {
+        $id = (int)$_POST['id'];
+
+        // Admin-only action
+        if (!$is_admin) {
+            echo json_encode(['success' => false, 'error' => 'Permission denied. Admin only.']);
+            $conn = null;
+            exit;
+        }
+
+        try {
+            $conn->beginTransaction();
+            // Remove article_categories for this source's articles
+            $conn->prepare("DELETE ac FROM article_categories ac JOIN articles a ON ac.article_id = a.id WHERE a.source_id = ?")->execute([$id]);
+            // Remove articles
+            $conn->prepare("DELETE FROM articles WHERE source_id = ?")->execute([$id]);
+            // Remove deal_categories for this source's deals
+            $conn->prepare("DELETE dc FROM deal_categories dc JOIN deals d ON dc.deal_id = d.id WHERE d.source_id = ?")->execute([$id]);
+            // Remove deals
+            $conn->prepare("DELETE FROM deals WHERE source_id = ?")->execute([$id]);
+            // Remove user links
+            $conn->prepare("DELETE FROM users_sources WHERE source_id = ?")->execute([$id]);
+            // Hard-delete the source row
+            $conn->prepare("DELETE FROM sources WHERE id = ?")->execute([$id]);
+            $conn->commit();
+
+            echo json_encode(['success' => true]);
+            $conn = null;
+            exit;
+        } catch (PDOException $e) {
+            $conn->rollBack();
+            echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+            $conn = null;
+            exit;
         }
     }
 }
@@ -185,18 +231,44 @@ if ($is_admin) {
     // Admin sees all sources
     $sources_result = $conn->query("
         SELECT s.*,
-               (SELECT COUNT(*) FROM articles WHERE source_id = s.id) +
-               (SELECT COUNT(*) FROM deals WHERE source_id = s.id AND is_active = 'Y') as articles_count
+               COALESCE(ac.total_articles, 0) + COALESCE(dc.deal_count, 0) AS articles_count,
+               COALESCE(ac.summarized_count, 0) AS summarized_count
         FROM sources s
-        ORDER BY name ASC
+        LEFT JOIN (
+            SELECT source_id,
+                   COUNT(*) AS total_articles,
+                   SUM(summary IS NOT NULL AND isSummaryFailed != 'Y') AS summarized_count
+            FROM articles
+            GROUP BY source_id
+        ) ac ON ac.source_id = s.id
+        LEFT JOIN (
+            SELECT source_id, COUNT(*) AS deal_count
+            FROM deals
+            WHERE is_active = 'Y'
+            GROUP BY source_id
+        ) dc ON dc.source_id = s.id
+        ORDER BY s.name ASC
     ");
 } else {
     // Regular users see base sources + their own linked sources
     $sources_stmt = $conn->prepare("
         SELECT s.*,
-               (SELECT COUNT(*) FROM articles WHERE source_id = s.id) +
-               (SELECT COUNT(*) FROM deals WHERE source_id = s.id AND is_active = 'Y') as articles_count
+               COALESCE(ac.total_articles, 0) + COALESCE(dc.deal_count, 0) AS articles_count,
+               COALESCE(ac.summarized_count, 0) AS summarized_count
         FROM sources s
+        LEFT JOIN (
+            SELECT source_id,
+                   COUNT(*) AS total_articles,
+                   SUM(summary IS NOT NULL AND isSummaryFailed != 'Y') AS summarized_count
+            FROM articles
+            GROUP BY source_id
+        ) ac ON ac.source_id = s.id
+        LEFT JOIN (
+            SELECT source_id, COUNT(*) AS deal_count
+            FROM deals
+            WHERE is_active = 'Y'
+            GROUP BY source_id
+        ) dc ON dc.source_id = s.id
         WHERE s.isBase = 'Y' OR (s.isBase = 'N' AND s.id IN (SELECT source_id FROM users_sources WHERE user_id = ?))
         ORDER BY s.name ASC
     ");
@@ -386,6 +458,7 @@ if ($is_admin) {
         .radio-button-group {
             display: flex;
             gap: 10px;
+            flex-wrap: wrap;
         }
 
         .radio-button-group input[type="radio"] {
@@ -497,7 +570,6 @@ if ($is_admin) {
                 <thead>
                     <tr>
                         <th>Name</th>
-                        <th>URL</th>
                         <th>Category</th>
                         <th>Status</th>
                         <th>Last Scraped</th>
@@ -513,10 +585,9 @@ if ($is_admin) {
                         $canModify = $is_admin || (!$isBaseSource && userOwnsSource($conn, $user_id, $source['id']));
                     ?>
                         <tr data-category="<?php echo htmlspecialchars($source['mainCategory'] ?? 'Business'); ?>">
-                            <td><strong><?php echo htmlspecialchars($source['name']); ?></strong></td>
-                            <td style="font-size: 0.9em;">
-                                <a href="<?php echo htmlspecialchars($source['url']); ?>" target="_blank">
-                                    <?php echo htmlspecialchars($source['url']); ?>
+                            <td>
+                                <a href="<?php echo htmlspecialchars($source['url']); ?>" target="_blank" style="font-weight: 600; color: #333; text-decoration: none;">
+                                    <?php echo htmlspecialchars($source['name']); ?>
                                 </a>
                             </td>
                             <td>
@@ -539,7 +610,18 @@ if ($is_admin) {
                                 <?php endif; ?>
                             </td>
                             <td><?php echo $source['last_scraped'] ?? 'Never'; ?></td>
-                            <td><?php echo $source['articles_count']; ?></td>
+                            <td>
+                                <?php if ($source['articles_count'] > 0): ?>
+                                <a href="index.php?source=<?php echo $source['id']; ?>">
+                                    <?php echo $source['articles_count']; ?>
+                                </a>
+                                <span style="color: #999; font-size: 0.85em; margin-left: 4px;">
+                                    (<?php echo $source['summarized_count']; ?> summarized)
+                                </span>
+                                <?php else: ?>
+                                0
+                                <?php endif; ?>
+                            </td>
                             <td>
                                 <?php if ($canModify): ?>
                                 <button class="btn" onclick='editSource(<?php echo json_encode($source); ?>)'>
@@ -605,21 +687,32 @@ if ($is_admin) {
                     </label>
                 </div>
 
-                <div class="form-actions">
-                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                    <button type="submit" class="btn btn-success">Save</button>
+                <div class="form-actions" style="justify-content: space-between;">
+                    <?php if ($is_admin): ?>
+                    <button type="button" class="btn btn-danger" id="deleteSourceBtn" style="display: none;" onclick="hardDeleteSource()">Delete Source</button>
+                    <?php else: ?>
+                    <span></span>
+                    <?php endif; ?>
+                    <div style="display: flex; gap: 10px;">
+                        <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                        <button type="submit" class="btn btn-success">Save</button>
+                    </div>
                 </div>
             </form>
         </div>
     </div>
 
     <script>
+        var currentEditSourceName = '';
+
         function openModal(mode) {
             document.getElementById('sourceModal').classList.add('active');
+            var deleteBtn = document.getElementById('deleteSourceBtn');
             if (mode === 'add') {
                 document.getElementById('modalTitle').textContent = 'Add New Source';
                 document.getElementById('formAction').value = 'create';
                 document.getElementById('sourceForm').reset();
+                if (deleteBtn) deleteBtn.style.display = 'none';
             }
         }
 
@@ -634,6 +727,7 @@ if ($is_admin) {
             document.getElementById('sourceName').value = source.name;
             document.getElementById('sourceUrl').value = source.url;
             document.getElementById('sourceEnabled').checked = source.isActive === 'Y';
+            currentEditSourceName = source.name;
 
             // Set the correct main category radio button dynamically
             const mainCategory = source.mainCategory || 'Business';
@@ -643,7 +737,36 @@ if ($is_admin) {
                 radioBtn.checked = true;
             }
 
+            // Show delete button when editing (admin only)
+            var deleteBtn = document.getElementById('deleteSourceBtn');
+            if (deleteBtn) deleteBtn.style.display = '';
+
             openModal('edit');
+        }
+
+        function hardDeleteSource() {
+            var sourceId = document.getElementById('sourceId').value;
+            if (!confirm('Permanently delete "' + currentEditSourceName + '" and all its articles? This cannot be undone.')) {
+                return;
+            }
+
+            fetch('sources.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'action=hard_delete&id=' + encodeURIComponent(sourceId)
+            })
+            .then(function(response) { return response.json(); })
+            .then(function(data) {
+                if (data.success) {
+                    closeModal();
+                    window.location.reload();
+                } else {
+                    alert('Error deleting source: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(function(error) {
+                alert('Error: ' + error);
+            });
         }
 
         function toggleSource(id, currentStatus) {

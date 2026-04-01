@@ -108,6 +108,9 @@ class CurlScraper:
             r'/markets/[^/]+/$',        # Reuters: /markets/slug/
             r'/news/[^/]+\.html',       # Yahoo Finance: /news/slug-123.html
             r'/article/[a-f0-9-]{30,}', # AP News: /article/slug-uuid
+            r'/news/[^/]+/$',           # CyberNews News
+            r'/security/[^/]+/$',       # CyberNews Security
+            r'/editorial/[^/]+/$',      # CyberNews Editorial
         ]
 
         return any(re.search(pattern, href) for pattern in article_patterns)
@@ -179,6 +182,70 @@ class CurlScraper:
 
         return cleaned
 
+    def extract_link_title(self, link):
+        """
+        Extract a headline-like title from an anchor tag while ignoring
+        image credits, captions, and other non-headline metadata.
+        """
+        if not link:
+            return ""
+
+        # CNN and similar sites often repeat an article URL on an image link
+        # where the only text is a photo credit inside figcaption/image metadata.
+        headline_selectors = [
+            '[data-editable="headline"]',
+            '.container__headline-text',
+            '.container__headline',
+            '.headline',
+            '.title',
+        ]
+
+        for selector in headline_selectors:
+            node = link.select_one(selector)
+            if node:
+                title = self.clean_scraped_title(node.get_text(separator=' ', strip=True))
+                if title:
+                    return title
+
+        # Strip caption/credit text before falling back to anchor text.
+        link_copy = BeautifulSoup(str(link), 'html.parser').find('a')
+        if not link_copy:
+            return ""
+
+        for selector in [
+            'figcaption',
+            '.image__metadata',
+            '.image__credit',
+            '.caption',
+            '.credit',
+            '[class*="caption"]',
+            '[class*="credit"]',
+        ]:
+            for node in link_copy.select(selector):
+                node.decompose()
+
+        return self.clean_scraped_title(link_copy.get_text(separator=' ', strip=True))
+
+    def is_junk_title(self, title):
+        """Reject obvious non-headline titles such as photo credits."""
+        if not title:
+            return True
+
+        title_lower = title.lower().strip()
+
+        if title_lower in {'from', 'via', 'photo', 'video'}:
+            return True
+
+        if title_lower.startswith(('from ', 'via ')) and len(title.split()) <= 4:
+            return True
+
+        if any(pattern in title_lower for pattern in [
+            '/instagram', '/getty', '/reuters', '/ap', '/afp'
+        ]):
+            return True
+
+        return False
+
     def clean_ny_athletic_title(self, title, url):
         """
         Clean NY Athletic titles:
@@ -214,10 +281,17 @@ class CurlScraper:
                 'Referer': self.base_url
             }
 
-            response = requests.get(rss_url, headers=headers, timeout=15)
-            response.raise_for_status()
+            try:
+                response = requests.get(rss_url, headers=headers, timeout=15)
+                response.raise_for_status()
+                content = response.content
+            except Exception as e:
+                print(f"  Requests failed ({e}), trying curl...")
+                content = self.fetch_with_curl(rss_url)
+                if not content:
+                    return []
 
-            root = ET.fromstring(response.content)
+            root = ET.fromstring(content)
 
             articles = []
 
@@ -264,11 +338,23 @@ class CurlScraper:
                         if not pub_datetime:
                             pub_datetime = datetime.now(pacific_tz)
 
+                        # Extract content/summary for teaser text
+                        content_elem = entry.find('atom:content', ns)
+                        if content_elem is None:
+                            content_elem = entry.find('atom:summary', ns)
+                        full_article = None
+                        if content_elem is not None and content_elem.text:
+                            raw = html_module.unescape(content_elem.text)
+                            # Strip HTML tags
+                            full_article = re.sub(r'<[^>]+>', ' ', raw)
+                            full_article = re.sub(r'\s+', ' ', full_article).strip()
+
                         if title and url:
                             articles.append({
                                 'title': title[:500],
                                 'url': url[:500],
-                                'date': pub_datetime
+                                'date': pub_datetime,
+                                'fullArticle': full_article
                             })
 
             else:  # RSS feed
@@ -276,6 +362,7 @@ class CurlScraper:
                     title_elem = item.find('title')
                     link_elem = item.find('link')
                     pubdate_elem = item.find('pubDate')
+                    desc_elem = item.find('description')
 
                     if title_elem is not None and link_elem is not None:
                         title = html_module.unescape(title_elem.text or '')
@@ -298,11 +385,19 @@ class CurlScraper:
                         if not pub_datetime:
                             pub_datetime = datetime.now(pacific_tz)
 
+                        # Extract description/teaser
+                        full_article = None
+                        if desc_elem is not None and desc_elem.text:
+                            raw = html_module.unescape(desc_elem.text)
+                            full_article = re.sub(r'<[^>]+>', ' ', raw)
+                            full_article = re.sub(r'\s+', ' ', full_article).strip()
+
                         if title and url:
                             articles.append({
                                 'title': title[:500],
                                 'url': url[:500],
-                                'date': pub_datetime
+                                'date': pub_datetime,
+                                'fullArticle': full_article
                             })
 
             print(f"✓ Found {len(articles)} articles")
@@ -342,12 +437,9 @@ class CurlScraper:
                     continue
 
                 href = link.get('href', '')
-                title = link.get_text(separator=' ', strip=True)
+                title = self.extract_link_title(link)
 
-                # Clean image attributions and junk
-                title = self.clean_scraped_title(title)
-
-                if not title or len(title) < 30:
+                if not title or len(title) < 30 or self.is_junk_title(title):
                     continue
 
                 if any(kw in title.lower() for kw in self.skip_keywords):
@@ -385,12 +477,9 @@ class CurlScraper:
                         break
 
                     href = link.get('href', '')
-                    title = link.get_text(separator=' ', strip=True)
+                    title = self.extract_link_title(link)
 
-                    # Clean image attributions and junk
-                    title = self.clean_scraped_title(title)
-
-                    if not title or len(title) < 30 or len(title) > 200:
+                    if not title or len(title) < 30 or len(title) > 200 or self.is_junk_title(title):
                         continue
 
                     if href.startswith('http'):
@@ -455,13 +544,15 @@ class CurlScraper:
                 cursor.close()
                 return 'skipped'
 
+            full_article = article_data.get('fullArticle')
             cursor.execute("""
-                INSERT INTO articles (source_id, title, url, published_date, scraped_at)
-                VALUES (%s, %s, %s, %s, NOW())
+                INSERT INTO articles (source_id, title, url, fullArticle, published_date, scraped_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
             """, (
                 self.source_id,
                 article_data['title'],
                 article_data['url'],
+                full_article,
                 article_data['date']
             ))
 
@@ -539,6 +630,55 @@ class CurlScraper:
         except Error as e:
             print(f"  ⚠ Error updating source stats: {e}")
 
+    def fetch_ti_freeblurb(self, url):
+        """Fetch content from The Information article/briefing page (no subscription needed).
+        Articles: uses freeBlurb (~5000-6000 chars). Briefings: uses dek + teaser (~500 chars)."""
+        try:
+            html = self.fetch_with_curl(url)
+            if not html:
+                return None
+
+            def strip_html(s):
+                t = re.sub(r'<[^>]+>', ' ', s or '')
+                return re.sub(r'\s+', ' ', html_module.unescape(t)).strip()
+
+            # Full article page
+            match = re.search(
+                r'<script[^>]+data-component-name="Article"[^>]*>(.*?)</script>',
+                html, re.DOTALL
+            )
+            if match:
+                data = json.loads(match.group(1))
+                blurb_html = (data.get('article') or {}).get('freeBlurb', '')
+                if blurb_html:
+                    text = strip_html(blurb_html)
+                    # Strip leading event/promo sentences
+                    sentences = re.split(r'(?<=[.!?])\s+', text)
+                    skip = 0
+                    for i, s in enumerate(sentences[:5]):
+                        if any(kw in s for kw in ['Please join', 'Register now', 'Learn more here', 'Sign up']):
+                            skip = i + 1
+                    text = ' '.join(sentences[skip:]).strip()
+                    return text if len(text) > 100 else None
+
+            # Briefing page
+            match = re.search(
+                r'<script[^>]+data-component-name="Briefing"[^>]*>(.*?)</script>',
+                html, re.DOTALL
+            )
+            if match:
+                data = json.loads(match.group(1))
+                briefing = data.get('briefing') or {}
+                parts = [strip_html(briefing.get('dek', '')), strip_html(data.get('teaser', ''))]
+                text = ' '.join(p for p in parts if p)
+                return text if len(text) > 100 else None
+
+            return None
+
+        except Exception as e:
+            print(f"  ⚠ TI freeBlurb fetch error for {url}: {e}")
+            return None
+
     def run(self):
         """Main scraping workflow"""
         print("=" * 60)
@@ -577,6 +717,15 @@ class CurlScraper:
                 articles = self.scrape_rss_feed('https://venturebeat.com/feed/')
             elif source['id'] == 48:  # sfGate (PerimeterX bot protection)
                 articles = self.scrape_rss_feed('https://www.sfgate.com/bayarea/feed/bay-area-news-429.php')
+            elif source['id'] == 55:  # CyberNews (direct feed blocked by Cloudflare, use Google News)
+                articles = self.scrape_rss_feed('https://news.google.com/rss/search?q=site:cybernews.com&hl=en-US&gl=US&ceid=US:en')
+                # Google News appends " - Cybernews" to titles — strip it
+                for a in articles:
+                    a['title'] = re.sub(r'\s*-\s*Cybernews\s*$', '', a['title'], flags=re.IGNORECASE)
+            elif source['id'] == 56:  # The Information (paywalled — RSS for URLs, article page for freeBlurb)
+                articles = self.scrape_rss_feed('https://www.theinformation.com/feed')
+                for a in articles:
+                    a['fullArticle'] = self.fetch_ti_freeblurb(a['url']) or a.get('fullArticle')
             else:
                 articles = self.scrape_homepage()
 

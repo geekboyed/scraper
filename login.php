@@ -26,13 +26,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $update_stmt = $conn->prepare("UPDATE users SET last_login = NOW() WHERE id = ?");
             $update_stmt->execute([$user['id']]);
 
-            // Set cookie with no expiration (session cookie persists until browser close,
-            // but we set a far-future expiry so it persists)
-            setcookie('user_session', $user['id'], [
-                'expires' => 0,
-                'path' => '/',
+            // Generate a random opaque token and store in DB
+            $token = bin2hex(random_bytes(32));
+            $stmt = $conn->prepare("INSERT INTO user_sessions (token, user_id) VALUES (?, ?)");
+            $stmt->execute([$token, $user['id']]);
+            setcookie('user_session', $token, [
+                'expires'  => 0,
+                'path'     => '/',
                 'httponly' => true,
-                'samesite' => 'Lax'
+                'samesite' => 'Lax',
             ]);
 
             header('Location: index.php');
@@ -191,8 +193,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <button type="submit" class="btn">Sign In</button>
         </form>
 
-        <div class="auth-links">
-            Don't have an account? <a href="signup.php">Sign up with invite code</a>
+        <div style="margin-top: 20px; text-align: center;">
+            <div style="color: #999; font-size: 0.85em; margin-bottom: 10px;">— or —</div>
+            <a href="signup.php" style="display:inline-block; width:100%; padding:12px 25px; background:white; color:#667eea; border:2px solid #667eea; border-radius:5px; font-size:14px; font-weight:600; text-decoration:none; box-sizing:border-box; text-align:center; transition:all 0.3s;">
+                Use Invite Code
+            </a>
         </div>
     </div>
 </body>

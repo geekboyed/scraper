@@ -62,6 +62,7 @@ $categories_grouped = get_categories_grouped($conn);
 $category_slug_map = [
     'Deals' => 'deals',
     'Business' => 'business',
+    'Politics' => 'politics',
     'Technology' => 'tech',
     'Sports' => 'sports',
     'General' => 'general'
@@ -69,6 +70,7 @@ $category_slug_map = [
 $category_icon_map = [
     'Deals' => '🏷️',
     'Business' => '💼',
+    'Politics' => '🏛️',
     'Technology' => '🖥️',
     'Sports' => '⚽',
     'General' => '🌐'
@@ -84,11 +86,11 @@ $page_size = isset($_GET['size']) ? (int)$_GET['size'] : 50;
 
 // Apply default view if no explicit filter is set in URL
 $has_explicit_filter = !empty($category_filter) || !empty($source_filter) ||
-                       isset($_GET['deals']) || isset($_GET['tech']) || isset($_GET['business']) || isset($_GET['sports']) || isset($_GET['general']);
+                       isset($_GET['deals']) || isset($_GET['tech']) || isset($_GET['business']) || isset($_GET['politics']) || isset($_GET['sports']) || isset($_GET['general']);
 
 if (!$has_explicit_filter && $default_view !== 'all') {
     // Auto-redirect to apply default view - supports dynamic parent category names
-    $valid_views = ['deals', 'tech', 'business', 'sports', 'general'];
+    $valid_views = ['deals', 'tech', 'business', 'politics', 'sports', 'general'];
     if (in_array($default_view, $valid_views)) {
         $redirect_url = 'index.php?' . urlencode($default_view) . '=1';
         if ($date_filter !== '1day') {
@@ -116,6 +118,7 @@ $params = [];
 $deals_filter = isset($_GET['deals']) && $_GET['deals'] == '1';
 $tech_filter = isset($_GET['tech']) && $_GET['tech'] == '1';
 $business_filter = isset($_GET['business']) && $_GET['business'] == '1';
+$politics_filter = isset($_GET['politics']) && $_GET['politics'] == '1';
 $sports_filter = isset($_GET['sports']) && $_GET['sports'] == '1';
 $general_filter = isset($_GET['general']) && $_GET['general'] == '1';
 
@@ -124,6 +127,7 @@ $parent_filter_map = [
     'deals' => 'Deals',
     'tech' => 'Technology',
     'business' => 'Business',
+    'politics' => 'Politics',
     'sports' => 'Sports',
     'general' => 'General'
 ];
@@ -275,16 +279,18 @@ if (!$active_parent_filter && !empty($category_filter)) {
 }
 
 if ($parent_filter_from_url && $active_parent_filter && empty($category_filter)) {
-    // Parent filter from URL (e.g. ?sports=1) - show all children of that parent
+    // Parent filter from URL (e.g. ?sports=1) - show all children of that parent,
+    // or the parent category itself if articles are assigned directly to level 1.
     $parent_id = get_parent_category_id($conn, $active_parent_filter);
     if ($parent_id) {
         $child_ids = get_child_category_ids($conn, $parent_id);
-        if (!empty($child_ids)) {
-            $placeholders = implode(',', array_fill(0, count($child_ids), '?'));
+        $filter_category_ids = !empty($child_ids) ? $child_ids : [$parent_id];
+        if (!empty($filter_category_ids)) {
+            $placeholders = implode(',', array_fill(0, count($filter_category_ids), '?'));
             $where[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a.id AND category_id IN ($placeholders))";
-            foreach ($child_ids as $cid) {
+            foreach ($filter_category_ids as $cid) {
                 $params[] = $cid;
-                    }
+            }
         }
     }
 } elseif (!empty($category_filter)) {
@@ -303,8 +309,8 @@ if ($current_user && $current_user['isAdmin'] != 'Y') {
 }
 
 // ALWAYS apply user preference filters first (if they exist)
-// Apply preferred sources filter
-if (!empty($preferred_sources)) {
+// Apply preferred sources filter (skip if user explicitly selected a source)
+if (!empty($preferred_sources) && empty($source_filter)) {
     $placeholders = implode(',', array_fill(0, count($preferred_sources), '?'));
     $where[] = "a.source_id IN ($placeholders)";
     foreach ($preferred_sources as $src_id) {
@@ -312,8 +318,8 @@ if (!empty($preferred_sources)) {
     }
 }
 
-// Apply preferred categories filter
-if (!empty($preferred_categories)) {
+// Apply preferred categories filter (skip if user explicitly selected a source)
+if (!empty($preferred_categories) && empty($source_filter)) {
     $placeholders = implode(',', array_fill(0, count($preferred_categories), '?'));
     $where[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a.id AND category_id IN ($placeholders))";
     foreach ($preferred_categories as $cat_id) {
@@ -338,8 +344,10 @@ if ($search) {
     $params[] = $search_param;
 }
 
-// Always show only summarized articles
-$where[] = "a.summary IS NOT NULL AND a.summary != ''";
+// Show only summarized articles unless a specific source is selected
+if (empty($source_filter)) {
+    $where[] = "a.summary IS NOT NULL AND a.summary != ''";
+}
 
 if ($date_filter && $date_filter !== 'all') {
     switch ($date_filter) {
@@ -403,10 +411,11 @@ if ($parent_filter_from_url && $active_parent_filter) {
     $parent_id = get_parent_category_id($conn, $active_parent_filter);
     if ($parent_id) {
         $child_ids = get_child_category_ids($conn, $parent_id);
-        if (!empty($child_ids)) {
-            $placeholders = implode(',', array_fill(0, count($child_ids), '?'));
+        $filter_category_ids = !empty($child_ids) ? $child_ids : [$parent_id];
+        if (!empty($filter_category_ids)) {
+            $placeholders = implode(',', array_fill(0, count($filter_category_ids), '?'));
             $sources_conditions[] = "EXISTS (SELECT 1 FROM article_categories WHERE article_id = a2.id AND category_id IN ($placeholders))";
-            foreach ($child_ids as $cid) {
+            foreach ($filter_category_ids as $cid) {
                 $sources_params[] = $cid;
             }
         }
