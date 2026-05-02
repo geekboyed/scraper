@@ -55,6 +55,7 @@ class ParallelSummarizer:
         self.anthropic_key = os.getenv('ANTHROPIC_API_KEY')
         self.deepseek_key = os.getenv('DEEPSEEK_API_KEY')
         self.openai_key = os.getenv('OPENAI_API_KEY')
+        self.summary_char_limit = self._get_positive_int_env('SUMMARY_CHAR_LIMIT', 100)
 
         # Display configuration
         print(f"✓ AI Provider Order: {' → '.join(self.provider_order)}")
@@ -66,6 +67,7 @@ class ParallelSummarizer:
             print("✓ DeepSeek API configured")
         if self.openai_key:
             print("✓ OpenAI API configured (quota may be limited)")
+        print(f"✓ Summary character limit: {self.summary_char_limit}")
 
         # Gemini direct configuration (disabled but kept for future use)
         self.gemini_client = None
@@ -79,6 +81,28 @@ class ParallelSummarizer:
         self.categories_cache = {}
         self.db_lock = Lock()
         self.gemini_rate_limited = False
+
+    def _get_positive_int_env(self, name, default):
+        """Read a positive integer env var, falling back to default when invalid."""
+        raw_value = os.getenv(name)
+        if raw_value is None:
+            return default
+        try:
+            value = int(raw_value)
+            return value if value > 0 else default
+        except ValueError:
+            return default
+
+    def _trim_summary_to_limit(self, summary):
+        summary = ' '.join((summary or '').split())
+        if len(summary) <= self.summary_char_limit:
+            return summary
+
+        trimmed = summary[:self.summary_char_limit].rstrip()
+        last_space = trimmed.rfind(' ')
+        if last_space > 0:
+            trimmed = trimmed[:last_space]
+        return trimmed.rstrip('.,;:')
 
     def connect_db(self):
         """Establish database connection"""
@@ -378,7 +402,7 @@ class ParallelSummarizer:
             return None
 
     def summarize_with_ai(self, title, content):
-        """Summarize using AI providers in configured order - concise 100-word summary"""
+        """Summarize using AI providers in configured order."""
         if not content or len(content) < 100:
             return None
 
@@ -390,16 +414,16 @@ Article Content:
 {content}
 
 Instructions for the summary:
-1. Write no more than 100 words
+1. Write no more than {self.summary_char_limit} characters
 2. Include the most important facts, figures, and key statistics
 3. Name all important people, companies, and organizations
 4. Explain the core context and main points
 5. Describe the key implications
 6. Use clear, engaging language
 7. Be concise and focused - every sentence should add value
-8. Stay within the 100-word limit
+8. Stay within the {self.summary_char_limit}-character limit
 
-Write a summary (100 words or fewer):"""
+Write a summary ({self.summary_char_limit} characters or fewer):"""
 
         # Try providers in configured order
         for provider in self.provider_order:
@@ -421,14 +445,11 @@ Write a summary (100 words or fewer):"""
                 continue  # Provider not configured, skip
 
             if result:
+                result = self._trim_summary_to_limit(result)
+                char_count = len(result)
                 word_count = len(result.split())
-                if word_count > 100:
-                    print(f"  ⚠ Summary too long ({word_count} words), truncating...")
-                    words = result.split()[:100]
-                    result = ' '.join(words)
-                    word_count = 100
-                print(f"  ✓ {provider_name} generated {word_count} word summary")
-                if word_count < 40:
+                print(f"  ✓ {provider_name} generated {char_count} char summary")
+                if word_count < 10:
                     print(f"  ⚠ Summary might be too short")
                 return result
             else:
