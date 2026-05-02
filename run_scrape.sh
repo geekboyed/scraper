@@ -34,6 +34,8 @@ echo "======================================"
 echo "Fast Article Scraper"
 echo "======================================"
 
+python3 cleanup_old_records.py
+
 python3 scrapers/scraper_curl.py
 python3 scrapers/scraper_marketwatch_rss.py
 

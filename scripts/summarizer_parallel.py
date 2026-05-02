@@ -242,7 +242,7 @@ class ParallelSummarizer:
                 print(f"  → Trying Playwright backup...")
                 content = self.get_article_content_playwright(url)
 
-            # Return extensive content for comprehensive summaries (200+ words needs 1500+ words input)
+            # Return enough content for concise summaries while preserving key facts.
             return content[:10000] if content else ""
 
         except Exception as e:
@@ -378,7 +378,7 @@ class ParallelSummarizer:
             return None
 
     def summarize_with_ai(self, title, content):
-        """Summarize using AI providers in configured order - comprehensive 200+ word summary"""
+        """Summarize using AI providers in configured order - concise 100-word summary"""
         if not content or len(content) < 100:
             return None
 
@@ -390,45 +390,45 @@ Article Content:
 {content}
 
 Instructions for the summary:
-1. Write between 200-300 words (aim for 250 words)
+1. Write no more than 100 words
 2. Include the most important facts, figures, and key statistics
 3. Name all important people, companies, and organizations
 4. Explain the core context and main points
 5. Describe the key implications
 6. Use clear, engaging language
 7. Be concise and focused - every sentence should add value
-8. Stay within the 200-300 word limit
+8. Stay within the 100-word limit
 
-Write a summary (200-300 words):"""
+Write a summary (100 words or fewer):"""
 
         # Try providers in configured order
         for provider in self.provider_order:
             result = None
 
             if provider == 'anthropic' and self.anthropic_key:
-                result = self.call_anthropic(prompt, max_tokens=500)
+                result = self.call_anthropic(prompt, max_tokens=250)
                 provider_name = "Claude"
             elif provider == 'minai' and self.minai_key:
-                result = self.call_minai(prompt, max_tokens=500)
+                result = self.call_minai(prompt, max_tokens=250)
                 provider_name = "1min.ai (GPT-4o-mini)"
             elif provider == 'deepseek' and self.deepseek_key:
-                result = self.call_deepseek(prompt, max_tokens=500)
+                result = self.call_deepseek(prompt, max_tokens=250)
                 provider_name = "DeepSeek"
             elif provider == 'openai' and self.openai_key:
-                result = self.call_openai(prompt, max_tokens=500)
+                result = self.call_openai(prompt, max_tokens=250)
                 provider_name = "OpenAI"
             else:
                 continue  # Provider not configured, skip
 
             if result:
                 word_count = len(result.split())
-                if word_count > 350:
+                if word_count > 100:
                     print(f"  ⚠ Summary too long ({word_count} words), truncating...")
-                    words = result.split()[:300]
+                    words = result.split()[:100]
                     result = ' '.join(words)
-                    word_count = 300
+                    word_count = 100
                 print(f"  ✓ {provider_name} generated {word_count} word summary")
-                if word_count < 150:
+                if word_count < 40:
                     print(f"  ⚠ Summary might be too short")
                 return result
             else:

@@ -52,29 +52,12 @@ $counts = $conn->query($count_query)->fetch();
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Manage Invite Codes - Admin</title>
+    <link rel="stylesheet" href="style.css">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: linear-gradient(135deg, #1e5128 0%, #2d6a4f 50%, #52b788 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-
         header {
-            background: white;
+            background: #eaeae5;
             padding: 30px;
-            border-radius: 10px;
+            border-radius: 0 0 10px 10px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
             margin-bottom: 30px;
             display: flex;
@@ -95,36 +78,6 @@ $counts = $conn->query($count_query)->fetch();
 
         .btn {
             padding: 12px 25px;
-            background: #667eea;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 600;
-            transition: background 0.3s;
-            text-decoration: none;
-            display: inline-block;
-        }
-
-        .btn:hover {
-            background: #5568d3;
-        }
-
-        .btn-success {
-            background: #28a745;
-        }
-
-        .btn-success:hover {
-            background: #218838;
-        }
-
-        .btn-secondary {
-            background: #6c757d;
-        }
-
-        .btn-secondary:hover {
-            background: #5a6268;
         }
 
         .stats-grid {
@@ -135,7 +88,7 @@ $counts = $conn->query($count_query)->fetch();
         }
 
         .stat-card {
-            background: white;
+            background: #ededea;
             padding: 20px;
             border-radius: 10px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
@@ -159,7 +112,7 @@ $counts = $conn->query($count_query)->fetch();
         .stat-card.expired .stat-value { color: #dc3545; }
 
         .panel {
-            background: white;
+            background: #ededea;
             border-radius: 10px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
             padding: 25px;
@@ -172,21 +125,12 @@ $counts = $conn->query($count_query)->fetch();
             font-size: 1.3em;
         }
 
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-
         table th, table td {
             padding: 12px 15px;
-            text-align: left;
             border-bottom: 1px solid #e9ecef;
         }
 
         table th {
-            background: #f8f9fa;
-            font-weight: 600;
             color: #333;
             font-size: 0.9em;
             text-transform: uppercase;
@@ -203,22 +147,18 @@ $counts = $conn->query($count_query)->fetch();
         }
 
         table th.sortable::after {
-            content: ' ⇅';
+            content: ' \21C5';
             opacity: 0.3;
         }
 
         table th.sortable.asc::after {
-            content: ' ↑';
+            content: ' \2191';
             opacity: 1;
         }
 
         table th.sortable.desc::after {
-            content: ' ↓';
+            content: ' \2193';
             opacity: 1;
-        }
-
-        table tr:hover {
-            background: #f8f9fa;
         }
 
         table tr.used-row {
@@ -237,11 +177,7 @@ $counts = $conn->query($count_query)->fetch();
         }
 
         .badge {
-            display: inline-block;
-            padding: 4px 10px;
-            border-radius: 12px;
             font-size: 0.8em;
-            font-weight: 600;
         }
 
         .badge-available {
@@ -259,42 +195,12 @@ $counts = $conn->query($count_query)->fetch();
             color: #721c24;
         }
 
-        .badge-active {
-            background: #d4edda;
-            color: #155724;
-        }
-
-        .badge-inactive {
-            background: #f8d7da;
-            color: #721c24;
-        }
-
-
         .modal {
-            display: none;
-            position: fixed;
-            z-index: 1000;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0,0,0,0.5);
             animation: fadeIn 0.3s;
         }
 
-        .modal.show {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
         .modal-content {
-            background-color: white;
-            padding: 30px;
-            border-radius: 10px;
             box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-            max-width: 500px;
-            width: 90%;
             animation: slideIn 0.3s;
         }
 
@@ -308,52 +214,12 @@ $counts = $conn->query($count_query)->fetch();
             to { transform: translateY(0); opacity: 1; }
         }
 
-        .modal-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-        }
-
-        .modal-header h3 {
-            margin: 0;
-            color: #333;
-            font-size: 1.5em;
-        }
-
-        .close-modal {
-            background: none;
-            border: none;
-            font-size: 28px;
-            color: #999;
-            cursor: pointer;
-            padding: 0;
-            width: 30px;
-            height: 30px;
-            line-height: 1;
-        }
-
-        .close-modal:hover {
-            color: #333;
-        }
-
-        .form-group {
-            margin-bottom: 20px;
-        }
-
         .form-group label {
-            display: block;
             margin-bottom: 8px;
-            font-weight: 600;
-            color: #333;
         }
 
         .form-group input {
-            width: 100%;
             padding: 10px 15px;
-            border: 2px solid #e0e0e0;
-            border-radius: 5px;
-            font-size: 14px;
         }
 
         .form-group input[type="number"] {
@@ -423,15 +289,34 @@ $counts = $conn->query($count_query)->fetch();
     </style>
 </head>
 <body>
+    <nav class="site-nav">
+        <div class="nav-left">
+            <a href="index.php">Articles</a>
+            <a href="sources.php">Sources</a>
+            <a href="data.php">Data</a>
+            <?php if ($current_user && $current_user['isAdmin'] == 'Y'): ?>
+            <div class="nav-divider"></div>
+            <a href="admin_users.php">Users</a>
+            <a href="admin_invites.php" class="active">Invites</a>
+            <?php endif; ?>
+        </div>
+        <div class="nav-right">
+            <?php if ($current_user): ?>
+            <span class="nav-user-info">
+                <?php echo htmlspecialchars($current_user['username'] ?? $current_user['email']); ?>
+                <?php if ($current_user['isAdmin'] == 'Y'): ?>
+                    <span class="nav-admin-badge">Admin</span>
+                <?php endif; ?>
+            </span>
+            <?php endif; ?>
+            <a href="logout.php">Logout</a>
+        </div>
+    </nav>
     <div class="container">
         <header>
             <div>
                 <h1>Invite Codes</h1>
                 <p class="subtitle">Generate and manage user invite codes</p>
-            </div>
-            <div class="nav-links">
-                <a href="index.php" class="btn btn-secondary">Dashboard</a>
-                <a href="admin_users.php" class="btn btn-secondary">Users</a>
             </div>
         </header>
 
@@ -773,12 +658,6 @@ $counts = $conn->query($count_query)->fetch();
 
     </script>
 
-    <!-- Close/Back Button -->
-    <div style="max-width: 1400px; margin: 0 auto; padding: 20px; text-align: center; border-top: 2px solid #e0e0e0;">
-        <a href="index.php" class="btn btn-secondary" style="padding: 12px 30px; font-size: 16px;">
-            ← Back to Dashboard
-        </a>
-    </div>
 </body>
 </html>
 <?php $conn = null; ?>

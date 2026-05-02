@@ -51,123 +51,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login - News Dashboard</title>
+    <link rel="stylesheet" href="style.css">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: linear-gradient(135deg, #1e5128 0%, #2d6a4f 50%, #52b788 100%);
-            min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
-            padding: 20px;
-        }
-
-        .auth-card {
-            background: white;
-            border-radius: 10px;
-            box-shadow: 0 8px 16px rgba(0,0,0,0.2);
-            padding: 40px;
-            width: 100%;
-            max-width: 420px;
-        }
-
-        .auth-card h1 {
-            color: #333;
-            font-size: 1.8em;
-            margin-bottom: 8px;
-            text-align: center;
-        }
-
-        .auth-card .subtitle {
-            color: #666;
-            font-size: 0.95em;
-            text-align: center;
-            margin-bottom: 30px;
-        }
-
-        .form-group {
-            margin-bottom: 20px;
         }
 
         .form-group label {
-            display: block;
-            color: #333;
-            font-weight: 600;
             margin-bottom: 6px;
             font-size: 0.9em;
         }
 
         .form-group input {
-            width: 100%;
             padding: 12px 15px;
-            border: 2px solid #e0e0e0;
-            border-radius: 5px;
-            font-size: 14px;
             transition: border-color 0.3s;
-        }
-
-        .form-group input:focus {
-            outline: none;
-            border-color: #667eea;
         }
 
         .btn {
             width: 100%;
             padding: 12px 25px;
-            background: #667eea;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 600;
-            transition: background 0.3s;
-        }
-
-        .btn:hover {
-            background: #5568d3;
-        }
-
-        .alert {
-            padding: 12px 15px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-            font-size: 0.9em;
-        }
-
-        .alert-error {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
-        }
-
-        .alert-success {
-            background: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
-        }
-
-        .auth-links {
-            text-align: center;
-            margin-top: 20px;
-            font-size: 0.9em;
-            color: #666;
-        }
-
-        .auth-links a {
-            color: #667eea;
-            text-decoration: none;
-            font-weight: 600;
-        }
-
-        .auth-links a:hover {
-            text-decoration: underline;
         }
     </style>
 </head>
@@ -195,7 +99,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         <div style="margin-top: 20px; text-align: center;">
             <div style="color: #999; font-size: 0.85em; margin-bottom: 10px;">— or —</div>
-            <a href="signup.php" style="display:inline-block; width:100%; padding:12px 25px; background:white; color:#667eea; border:2px solid #667eea; border-radius:5px; font-size:14px; font-weight:600; text-decoration:none; box-sizing:border-box; text-align:center; transition:all 0.3s;">
+            <a href="signup.php" style="display:inline-block; width:100%; padding:12px 25px; background:#ededea; color:#667eea; border:2px solid #667eea; border-radius:5px; font-size:14px; font-weight:600; text-decoration:none; box-sizing:border-box; text-align:center; transition:all 0.3s;">
                 Use Invite Code
             </a>
         </div>

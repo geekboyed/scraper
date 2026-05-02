@@ -31,25 +31,12 @@ $total_count = count($users);
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Manage Users - BIScrape</title>
+    <link rel="stylesheet" href="style.css">
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-
         header {
-            background: white;
+            background: #eaeae5;
             padding: 25px;
-            border-radius: 10px;
+            border-radius: 0 0 10px 10px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
             margin-bottom: 20px;
             display: flex;
@@ -71,33 +58,13 @@ $total_count = count($users);
         }
 
         .btn {
-            padding: 10px 20px;
-            background: #667eea;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 600;
-            text-decoration: none;
-            display: inline-block;
-            transition: background 0.3s;
             white-space: nowrap;
         }
 
-        .btn:hover { background: #5568d3; }
-        .btn-success { background: #28a745; }
-        .btn-success:hover { background: #218838; }
-        .btn-danger { background: #dc3545; }
-        .btn-danger:hover { background: #c82333; }
-        .btn-secondary { background: #6c757d; }
-        .btn-secondary:hover { background: #5a6268; }
-        .btn-warning { background: #ffc107; color: #333; }
-        .btn-warning:hover { background: #e0a800; }
         .btn-sm { padding: 6px 12px; font-size: 13px; }
 
         .stats-bar {
-            background: white;
+            background: #ededea;
             padding: 15px 25px;
             border-radius: 10px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
@@ -126,7 +93,7 @@ $total_count = count($users);
         }
 
         .search-bar {
-            background: white;
+            background: #ededea;
             padding: 15px 25px;
             border-radius: 10px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
@@ -148,7 +115,7 @@ $total_count = count($users);
         }
 
         .users-table {
-            background: white;
+            background: #ededea;
             border-radius: 10px;
             padding: 25px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
@@ -156,21 +123,7 @@ $total_count = count($users);
             overflow-x: auto;
         }
 
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-
-        th, td {
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #dee2e6;
-        }
-
         th {
-            background: #f8f9fa;
-            font-weight: 600;
-            color: #495057;
             cursor: pointer;
             user-select: none;
             white-space: nowrap;
@@ -189,40 +142,8 @@ $total_count = count($users);
             color: #667eea;
         }
 
-        tr:hover {
-            background: #f8f9fa;
-        }
-
         tr.inactive-user {
             opacity: 0.6;
-        }
-
-        .badge {
-            padding: 4px 10px;
-            border-radius: 12px;
-            font-size: 0.85em;
-            font-weight: 600;
-            display: inline-block;
-        }
-
-        .badge-admin {
-            background: #cfe2ff;
-            color: #084298;
-        }
-
-        .badge-user {
-            background: #e2e3e5;
-            color: #41464b;
-        }
-
-        .badge-active {
-            background: #d4edda;
-            color: #155724;
-        }
-
-        .badge-inactive {
-            background: #f8d7da;
-            color: #721c24;
         }
 
         .action-btns {
@@ -249,11 +170,6 @@ $total_count = count($users);
         }
 
         .modal-content {
-            background: white;
-            padding: 30px;
-            border-radius: 10px;
-            max-width: 500px;
-            width: 90%;
             max-height: 90vh;
             overflow-y: auto;
         }
@@ -261,32 +177,6 @@ $total_count = count($users);
         .modal-content h2 {
             margin-bottom: 20px;
             color: #333;
-        }
-
-        .form-group {
-            margin-bottom: 20px;
-        }
-
-        .form-group label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: 600;
-            color: #333;
-        }
-
-        .form-group input[type="text"],
-        .form-group input[type="email"] {
-            width: 100%;
-            padding: 10px;
-            border: 2px solid #e0e0e0;
-            border-radius: 5px;
-            font-size: 14px;
-            outline: none;
-            transition: border-color 0.3s;
-        }
-
-        .form-group input:focus {
-            border-color: #667eea;
         }
 
         .form-group .checkbox-label {
@@ -373,11 +263,33 @@ $total_count = count($users);
     </style>
 </head>
 <body>
+    <nav class="site-nav">
+        <div class="nav-left">
+            <a href="index.php">Articles</a>
+            <a href="sources.php">Sources</a>
+            <a href="data.php">Data</a>
+            <?php if ($current_user && $current_user['isAdmin'] == 'Y'): ?>
+            <div class="nav-divider"></div>
+            <a href="admin_users.php" class="active">Users</a>
+            <a href="admin_invites.php">Invites</a>
+            <?php endif; ?>
+        </div>
+        <div class="nav-right">
+            <?php if ($current_user): ?>
+            <span class="nav-user-info">
+                <?php echo htmlspecialchars($current_user['username'] ?? $current_user['email']); ?>
+                <?php if ($current_user['isAdmin'] == 'Y'): ?>
+                    <span class="nav-admin-badge">Admin</span>
+                <?php endif; ?>
+            </span>
+            <?php endif; ?>
+            <a href="logout.php">Logout</a>
+        </div>
+    </nav>
     <div class="container">
         <header>
             <h1>Manage Users</h1>
             <div class="header-actions">
-                <a href="index.php" class="btn btn-secondary">Back to Articles</a>
                 <button class="btn btn-success" onclick="openCreateModal()">+ Add User</button>
             </div>
         </header>
@@ -827,12 +739,6 @@ $total_count = count($users);
         });
     </script>
 
-    <!-- Close/Back Button -->
-    <div style="max-width: 1400px; margin: 0 auto; padding: 20px; text-align: center; border-top: 2px solid #e0e0e0;">
-        <a href="index.php" class="btn btn-secondary" style="padding: 12px 30px; font-size: 16px;">
-            ← Back to Dashboard
-        </a>
-    </div>
 </body>
 </html>
 <?php $conn = null; ?>

@@ -247,7 +247,7 @@ if ($is_admin) {
             WHERE is_active = 'Y'
             GROUP BY source_id
         ) dc ON dc.source_id = s.id
-        ORDER BY s.name ASC
+        ORDER BY s.isBase ASC, s.name ASC
     ");
 } else {
     // Regular users see base sources + their own linked sources
@@ -270,9 +270,9 @@ if ($is_admin) {
             GROUP BY source_id
         ) dc ON dc.source_id = s.id
         WHERE s.isBase = 'Y' OR (s.isBase = 'N' AND s.id IN (SELECT source_id FROM users_sources WHERE user_id = ?))
-        ORDER BY s.name ASC
+        ORDER BY CASE WHEN s.isBase = 'N' AND s.id IN (SELECT source_id FROM users_sources WHERE user_id = ?) THEN 0 ELSE 1 END, s.name ASC
     ");
-    $sources_stmt->execute([$user_id]);
+    $sources_stmt->execute([$user_id, $user_id]);
     $sources_result = $sources_stmt;
 }
 ?>
@@ -282,25 +282,20 @@ if ($is_admin) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Manage Sources - BIScrape</title>
+    <link rel="stylesheet" href="style.css">
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-
-        .container {
-            max-width: 1000px;
+        .page-wrapper {
+            max-width: 1200px;
             margin: 0 auto;
         }
 
+        .container {
+        }
+
         header {
-            background: white;
+            background: #eaeae5;
             padding: 25px;
-            border-radius: 10px;
+            border-radius: 0;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
             margin-bottom: 20px;
             display: flex;
@@ -312,28 +307,6 @@ if ($is_admin) {
             color: #333;
             font-size: 2em;
         }
-
-        .btn {
-            padding: 10px 20px;
-            background: #667eea;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 600;
-            text-decoration: none;
-            display: inline-block;
-            transition: background 0.3s;
-        }
-
-        .btn:hover { background: #5568d3; }
-        .btn-success { background: #28a745; }
-        .btn-success:hover { background: #218838; }
-        .btn-danger { background: #dc3545; }
-        .btn-danger:hover { background: #c82333; }
-        .btn-secondary { background: #6c757d; }
-        .btn-secondary:hover { background: #5a6268; }
 
         .message {
             padding: 15px;
@@ -355,32 +328,11 @@ if ($is_admin) {
         }
 
         .sources-table {
-            background: white;
+            background: #ededea;
             border-radius: 10px;
             padding: 25px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
             margin-bottom: 20px;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-
-        th, td {
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #dee2e6;
-        }
-
-        th {
-            background: #f8f9fa;
-            font-weight: 600;
-            color: #495057;
-        }
-
-        tr:hover {
-            background: #f8f9fa;
         }
 
         .status-badge {
@@ -398,51 +350,6 @@ if ($is_admin) {
         .status-disabled {
             background: #f8d7da;
             color: #721c24;
-        }
-
-        .modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.5);
-            z-index: 1000;
-        }
-
-        .modal.active {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .modal-content {
-            background: white;
-            padding: 30px;
-            border-radius: 10px;
-            max-width: 500px;
-            width: 90%;
-        }
-
-        .form-group {
-            margin-bottom: 20px;
-        }
-
-        .form-group label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: 600;
-            color: #333;
-        }
-
-        .form-group input[type="text"],
-        .form-group input[type="url"] {
-            width: 100%;
-            padding: 10px;
-            border: 2px solid #e0e0e0;
-            border-radius: 5px;
-            font-size: 14px;
         }
 
         .form-group input[type="checkbox"] {
@@ -500,7 +407,7 @@ if ($is_admin) {
             color: #084298;
         }
 
-        .category-technology {
+        .category-technology, [class*="category-tech"] {
             background: #d1e7dd;
             color: #0f5132;
         }
@@ -540,11 +447,34 @@ if ($is_admin) {
     </style>
 </head>
 <body>
+    <div class="page-wrapper">
+    <nav class="site-nav">
+        <div class="nav-left">
+            <a href="index.php">Articles</a>
+            <a href="sources.php" class="active">Sources</a>
+            <a href="data.php">Data</a>
+            <?php if ($current_user && $current_user['isAdmin'] == 'Y'): ?>
+            <div class="nav-divider"></div>
+            <a href="admin_users.php">Users</a>
+            <a href="admin_invites.php">Invites</a>
+            <?php endif; ?>
+        </div>
+        <div class="nav-right">
+            <?php if ($current_user): ?>
+            <span class="nav-user-info">
+                <?php echo htmlspecialchars($current_user['username'] ?? $current_user['email']); ?>
+                <?php if ($current_user['isAdmin'] == 'Y'): ?>
+                    <span class="nav-admin-badge">Admin</span>
+                <?php endif; ?>
+            </span>
+            <?php endif; ?>
+            <a href="logout.php">Logout</a>
+        </div>
+    </nav>
     <div class="container">
         <header>
-            <h1>🔗 Manage Sources</h1>
+            <h1>Manage Sources</h1>
             <div>
-                <a href="index.php" class="btn btn-secondary">← Back to Articles</a>
                 <button class="btn btn-success" onclick="openModal('add')">+ Add Source</button>
             </div>
         </header>
@@ -641,6 +571,7 @@ if ($is_admin) {
                 </tbody>
             </table>
         </div>
+    </div>
     </div>
 
     <!-- Add/Edit Modal -->

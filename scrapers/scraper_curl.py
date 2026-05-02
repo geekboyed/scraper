@@ -244,6 +244,10 @@ class CurlScraper:
         ]):
             return True
 
+        # Reject image filenames (e.g., "118598_EasterEggRoll_HD Thumbnail.jpg")
+        if re.search(r'\.(jpg|jpeg|png|gif|webp|svg|bmp)\s*$', title_lower):
+            return True
+
         return False
 
     def clean_ny_athletic_title(self, title, url):

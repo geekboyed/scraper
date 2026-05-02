@@ -1,0 +1,355 @@
+/* ============================================================
+   BIScrape - Shared Stylesheet
+   Extracted common CSS used across multiple PHP pages.
+   Page-specific overrides remain in each file's inline <style>.
+   ============================================================ */
+
+/* --- Reset & Base --- */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: linear-gradient(135deg, #dce2e9 0%, #c9d1db 100%);
+    min-height: 100vh;
+    padding: 20px;
+}
+
+/* --- Navigation --- */
+.site-nav {
+    background: #1e293b;
+    padding: 0 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    max-width: 1200px;
+    margin: 0 auto 0 auto;
+    border-radius: 10px 10px 0 0;
+    flex-wrap: wrap;
+}
+
+.site-nav a, .site-nav button.nav-link {
+    color: rgba(255,255,255,0.7);
+    text-decoration: none;
+    padding: 14px 18px;
+    font-size: 14px;
+    font-weight: 500;
+    transition: color 0.2s, border-color 0.2s;
+    border-bottom: 2px solid transparent;
+    background: none;
+    border-top: none;
+    border-left: none;
+    border-right: none;
+    cursor: pointer;
+    font-family: inherit;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.site-nav a:hover, .site-nav button.nav-link:hover {
+    color: #fff;
+    border-bottom-color: rgba(255,255,255,0.3);
+}
+
+.site-nav a.active {
+    color: #fff;
+    border-bottom-color: #2563eb;
+}
+
+.site-nav .nav-left, .site-nav .nav-right {
+    display: flex;
+    align-items: center;
+}
+
+.site-nav .nav-divider {
+    width: 1px;
+    height: 20px;
+    background: rgba(255,255,255,0.15);
+    margin: 0 4px;
+}
+
+.nav-user-info {
+    color: rgba(255,255,255,0.7);
+    font-size: 13px;
+    padding: 14px 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.nav-admin-badge {
+    background: #2563eb;
+    color: #fff;
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 8px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/* --- Buttons (base / admin pages) --- */
+.btn {
+    padding: 10px 20px;
+    background: #667eea;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    text-decoration: none;
+    display: inline-block;
+    transition: background 0.3s;
+}
+
+.btn:hover {
+    background: #5568d3;
+}
+
+.btn-success {
+    background: #28a745;
+}
+
+.btn-success:hover {
+    background: #218838;
+}
+
+.btn-danger {
+    background: #dc3545;
+}
+
+.btn-danger:hover {
+    background: #c82333;
+}
+
+.btn-secondary {
+    background: #6c757d;
+}
+
+.btn-secondary:hover {
+    background: #5a6268;
+}
+
+.btn-warning {
+    background: #ffc107;
+    color: #333;
+}
+
+.btn-warning:hover {
+    background: #e0a800;
+}
+
+.btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* --- Forms --- */
+.form-group {
+    margin-bottom: 20px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: 600;
+    color: #333;
+}
+
+.form-group input[type="text"],
+.form-group input[type="url"],
+.form-group input[type="email"],
+.form-group select,
+.form-group textarea {
+    width: 100%;
+    padding: 10px;
+    border: 2px solid #e0e0e0;
+    border-radius: 5px;
+    font-size: 14px;
+}
+
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+    outline: none;
+    border-color: #667eea;
+}
+
+/* --- Modals --- */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0,0,0,0.5);
+}
+
+.modal.active,
+.modal.show {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.modal-content {
+    background-color: #eaeae5;
+    padding: 30px;
+    border-radius: 10px;
+    max-width: 500px;
+    width: 90%;
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.modal-header h3 {
+    margin: 0;
+    color: #333;
+    font-size: 1.5em;
+}
+
+.close-modal {
+    background: none;
+    border: none;
+    font-size: 28px;
+    color: #999;
+    cursor: pointer;
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    line-height: 1;
+}
+
+.close-modal:hover {
+    color: #333;
+}
+
+/* --- Badges --- */
+.badge {
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 0.85em;
+    font-weight: 600;
+    display: inline-block;
+}
+
+.badge-active {
+    background: #d4edda;
+    color: #155724;
+}
+
+.badge-inactive {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+.badge-admin {
+    background: #cfe2ff;
+    color: #084298;
+}
+
+.badge-user {
+    background: #e2e3e5;
+    color: #41464b;
+}
+
+/* --- Tables --- */
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+th, td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid #dee2e6;
+}
+
+th {
+    background: #f8f9fa;
+    font-weight: 600;
+    color: #495057;
+}
+
+tr:hover {
+    background: #f8f9fa;
+}
+
+/* --- Alerts --- */
+.alert {
+    padding: 12px 15px;
+    border-radius: 5px;
+    margin-bottom: 20px;
+    font-size: 0.9em;
+}
+
+.alert-error {
+    background: #f8d7da;
+    color: #721c24;
+    border: 1px solid #f5c6cb;
+}
+
+.alert-success {
+    background: #d4edda;
+    color: #155724;
+    border: 1px solid #c3e6cb;
+}
+
+/* --- Auth Card (login/signup) --- */
+.auth-card {
+    background: #ededea;
+    border-radius: 10px;
+    box-shadow: 0 8px 16px rgba(0,0,0,0.2);
+    padding: 40px;
+    width: 100%;
+    max-width: 420px;
+}
+
+.auth-card h1 {
+    color: #333;
+    font-size: 1.8em;
+    margin-bottom: 8px;
+    text-align: center;
+}
+
+.auth-card .subtitle {
+    color: #666;
+    font-size: 0.95em;
+    text-align: center;
+    margin-bottom: 30px;
+}
+
+.auth-links {
+    text-align: center;
+    margin-top: 20px;
+    font-size: 0.9em;
+    color: #666;
+}
+
+.auth-links a {
+    color: #667eea;
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.auth-links a:hover {
+    text-decoration: underline;
+}
+
+/* --- Container --- */
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+}

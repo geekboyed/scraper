@@ -379,7 +379,7 @@ class ParallelSummarizer:
                 print(f"  ⊘ Cookie consent/privacy policy content detected, rejecting")
                 return ""
 
-            # Return extensive content for comprehensive summaries (200+ words needs 1500+ words input)
+            # Return enough content for concise summaries while preserving key facts.
             return content[:10000] if content else ""
 
         except Exception as e:
@@ -547,7 +547,7 @@ class ParallelSummarizer:
         return None
 
     def summarize_with_ai(self, title, content):
-        """Summarize using AI providers in configured order - comprehensive 200+ word summary"""
+        """Summarize using AI providers in configured order - concise 100-word summary"""
         if not content or len(content) < 100:
             return None
 
@@ -559,32 +559,32 @@ Article Content:
 {content}
 
 Instructions for the summary:
-1. Write between 200-300 words (aim for 250 words)
+1. Write no more than 100 words
 2. Include the most important facts, figures, and key statistics
 3. Name all important people, companies, and organizations
 4. Explain the core context and main points
 5. Describe the key implications
 6. Use clear, engaging language
 7. Be concise and focused - every sentence should add value
-8. Stay within the 200-300 word limit
+8. Stay within the 100-word limit
 
-Write a summary (200-300 words):"""
+Write a summary (100 words or fewer):"""
 
         # Try providers in configured order
         for provider in self.provider_order:
             result = None
 
             if provider == 'anthropic' and self.anthropic_key:
-                result = self.call_anthropic(prompt, max_tokens=500)
+                result = self.call_anthropic(prompt, max_tokens=250)
                 provider_name = "Claude"
             elif provider == 'minai' and self.minai_key:
-                result = self.call_minai(prompt, max_tokens=500)
+                result = self.call_minai(prompt, max_tokens=250)
                 provider_name = "1min.ai (GPT-4o-mini)"
             elif provider == 'deepseek' and self.deepseek_key:
-                result = self.call_deepseek(prompt, max_tokens=500)
+                result = self.call_deepseek(prompt, max_tokens=250)
                 provider_name = "DeepSeek"
             elif provider == 'openai' and self.openai_key:
-                result = self.call_openai(prompt, max_tokens=500)
+                result = self.call_openai(prompt, max_tokens=250)
                 provider_name = "OpenAI"
             else:
                 continue  # Provider not configured, skip
@@ -624,13 +624,13 @@ Write a summary (200-300 words):"""
                     continue  # Try next provider
 
                 word_count = len(result.split())
-                if word_count > 350:
+                if word_count > 100:
                     print(f"  ⚠ Summary too long ({word_count} words), truncating...")
-                    words = result.split()[:300]
+                    words = result.split()[:100]
                     result = ' '.join(words)
-                    word_count = 300
+                    word_count = 100
                 print(f"  ✓ {provider_name} generated {word_count} word summary")
-                if word_count < 150:
+                if word_count < 40:
                     print(f"  ⚠ Summary might be too short")
                 return result
             else:
@@ -675,11 +675,9 @@ RULES:
 5. 49ers: ONLY for articles specifically about the 49ers.
 6. College Sports: For NCAA/university athletics of any sport.
 7. Olympics & International: For Olympic Games, World Cup, international competitions.
-8. Professional Sports: For NHL, MLB, MLS, boxing, MMA, UFC, tennis, golf, and pro sports WITHOUT their own category. NEVER combine with NBA or NFL.
-9. Sports Business: ONLY for business aspects (contracts, revenue, team sales, labor). NOT for game results or athletic performance.
-10. Sports News: General catch-all. Use ONLY if no specific category fits.
-11. NEVER assign both a specific league AND Professional Sports.
-12. NEVER assign Sports News alongside a more specific category.
+8. Sports Business: ONLY for business aspects (contracts, revenue, team sales, labor). NOT for game results or athletic performance.
+9. Sports News: General catch-all for NHL, MLB, MLS, boxing, MMA, UFC, tennis, golf, and any sports that don't have their own category. Use ONLY if no specific category fits.
+10. NEVER assign Sports News alongside a more specific category.
 13. You may assign one business category (e.g., Markets & Finance, Legal & Regulatory) if the article is genuinely about business.
 
 Article Title: {title}
@@ -763,9 +761,8 @@ SPORTS ARTICLES:
 - 49ers: ONLY for articles specifically about the San Francisco 49ers team
 - College Sports: ONLY for NCAA/university athletics
 - Olympics & International: ONLY for Olympic Games, World Cup, international competitions
-- Professional Sports: Use for NHL, MLB, MLS, boxing, MMA, UFC, tennis, golf, and other pro sports that do NOT have their own category. Do NOT combine with NBA or NFL (they are already professional).
 - Sports Business: ONLY when the article focuses on the BUSINESS side of sports (contracts, revenue, team sales, sponsorships, labor disputes). Do NOT use for game results, scores, or athletic performance.
-- Sports News: General sports catch-all. Use ONLY if no more specific sports category applies.
+- Sports News: General sports catch-all for NHL, MLB, MLS, boxing, MMA, UFC, tennis, golf, and any sports without their own category. Use ONLY if no more specific sports category applies.
 
 BUSINESS ARTICLES:
 - Markets & Finance: Stock markets, trading, banking, investment, interest rates, IPOs, earnings reports
@@ -781,8 +778,9 @@ BUSINESS ARTICLES:
 - Media & Entertainment: Streaming, publishing, film, TV, music industry business
 - Labor & Workforce: Unions, strikes, layoffs, hiring trends, workplace policy
 - Supply Chain: Logistics, shipping, trade routes, supply chain disruptions
+- Real Estate: Property markets, housing, commercial real estate, REITs, mortgage rates
 
-TECHNOLOGY ARTICLES:
+TECH & SCIENCE ARTICLES:
 - Artificial Intelligence & ML: AI models, machine learning, LLMs, ChatGPT, AI companies, AI policy
 - Cybersecurity: Hacking, data breaches, security software, encryption, privacy violations
 - Cloud & Infrastructure: AWS, Azure, Google Cloud, data centers, server infrastructure
@@ -793,21 +791,28 @@ TECHNOLOGY ARTICLES:
 - Robotics & Automation: Industrial robots, autonomous systems, warehouse automation
 - Automotive Technology: Electric vehicles, Tesla, self-driving cars, EV batteries
 - Telecom & 5G: Wireless carriers, 5G networks, telecommunications infrastructure
+- Science & Research: Scientific research, space exploration, discoveries, academic studies
 
 GENERAL NEWS:
 - Politics: Government policy, elections, legislation (use ONLY if politics is the primary focus)
 - US News: Domestic US events not primarily about business or politics
 - World News: International events not primarily about business
-- Science: Scientific research, space exploration, discoveries
 - Education: Schools, universities, education policy
 - Environment & Climate: Climate change, sustainability, environmental regulations
 
+ENTERTAINMENT:
+- TV & Streaming: Television shows, streaming series, TV news, streaming platforms content
+- Movies: Film releases, reviews, box office, film industry
+- Actors: Actor news, casting, interviews, celebrity profiles
+- Music: Music releases, concerts, music industry news
+- Celebrity News: Celebrity gossip, red carpet, awards shows
+- Gaming: Video games, esports, game releases, gaming industry
+
 CRITICAL ANTI-OVERLAP RULES:
-- NEVER assign both a specific league (NBA, NFL) AND Professional Sports to the same article.
 - NEVER assign Sports News alongside a more specific sports category.
 - NEVER assign categories from different parent groups unless the article genuinely spans both (e.g., a tech company earnings report could be Markets & Finance + Artificial Intelligence & ML).
-- An article about an NBA team's finances gets NBA + Sports Business, NOT NBA + Professional Sports + Sports Business + Sports News.
-- An article about Olympic skiing gets Olympics & International, NOT Olympics & International + Professional Sports + Sports News.
+- An article about an NBA team's finances gets NBA + Sports Business, NOT NBA + Sports News.
+- An article about Olympic skiing gets Olympics & International, NOT Sports News.
 
 Article Title: {title}
 Article Summary: {summary}

@@ -12,6 +12,12 @@ A production web scraping and AI summarization system that collects business new
 - **Automation**: Cron jobs for scheduled scraping and summarization
 - **Server**: Apache/LAMP stack on WSL2
 
+## Servers and Deployment
+- **Dev server**: Local WSL2 instance (not always active)
+- **Production server**: **server2** (SSH as `user1@server2`)
+- **Production URL**: http://server2/scraper/
+- **Deployment**: `rsyncS2` command (defined in `~/.local/bin/rsyncS2`) syncs from dev to server2
+
 ## Project Structure
 ```
 /var/www/html/scraper/
@@ -78,6 +84,10 @@ A production web scraping and AI summarization system that collects business new
 ### Git Operations
 - **NEVER run git commands automatically** — no auto-commit, no auto-push, no auto-add
 - Only run git commands when explicitly asked by the user
+
+### AI Assistant Preferences
+- **Use parallel agents (teams)** whenever tasks can be split into independent work streams (e.g., editing multiple files, research + implementation, testing + fixing)
+- Prefer concurrent execution over sequential when tasks don't depend on each other
 
 ### AI API Configuration
 - **Primary**: 1min.ai (GPT-4o-mini) via MINAI_API_KEY
