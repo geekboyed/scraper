@@ -57,7 +57,7 @@ class ParallelSummarizer:
         self.anthropic_model = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-6')
         self.deepseek_model = os.getenv('DEEPSEEK_MODEL', 'deepseek-chat')
         self.openai_model = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
-        self.summary_char_limit = self._get_positive_int_env('SUMMARY_CHAR_LIMIT', 100)
+        self.summary_word_limit = self._get_positive_int_env('SUMMARY_WORD_LIMIT', 100)
 
         # Display configuration
         print(f"✓ AI Provider Order: {' → '.join(self.provider_order)}")
@@ -69,7 +69,7 @@ class ParallelSummarizer:
             print(f"✓ DeepSeek API configured ({self.deepseek_model})")
         if self.openai_key:
             print(f"✓ OpenAI API configured ({self.openai_model})")
-        print(f"✓ Summary character limit: {self.summary_char_limit}")
+        print(f"✓ Summary word limit: {self.summary_word_limit}")
 
         # Gemini direct configuration (disabled but kept for future use)
         self.gemini_client = None
@@ -95,16 +95,13 @@ class ParallelSummarizer:
         except ValueError:
             return default
 
-    def _trim_summary_to_limit(self, summary):
+    def _trim_summary_to_word_limit(self, summary):
         summary = ' '.join((summary or '').split())
-        if len(summary) <= self.summary_char_limit:
+        words = summary.split()
+        if len(words) <= self.summary_word_limit:
             return summary
 
-        trimmed = summary[:self.summary_char_limit].rstrip()
-        last_space = trimmed.rfind(' ')
-        if last_space > 0:
-            trimmed = trimmed[:last_space]
-        return trimmed.rstrip('.,;:')
+        return ' '.join(words[:self.summary_word_limit])
 
     def connect_db(self):
         """Establish database connection"""
@@ -557,14 +554,14 @@ class ParallelSummarizer:
             return None
         snippet = (content or '').strip()
         if snippet:
-            prompt = f"Write a concise summary under {self.summary_char_limit} characters based only on this title and excerpt.\nTitle: {title}\nExcerpt: {snippet[:500]}\nSummary:"
+            prompt = f"Write a concise summary under {self.summary_word_limit} words based only on this title and excerpt.\nTitle: {title}\nExcerpt: {snippet[:500]}\nSummary:"
         else:
-            prompt = f"Write a concise summary under {self.summary_char_limit} characters based only on this article title.\nTitle: {title}\nSummary:"
+            prompt = f"Write a concise summary under {self.summary_word_limit} words based only on this article title.\nTitle: {title}\nSummary:"
         try:
             result = self.call_anthropic(prompt, max_tokens=80)
             if result and len(result.strip()) > 10:
-                summary = self._trim_summary_to_limit(result)
-                print(f"  ↩ Last-resort Anthropic summary ({len(summary)} chars)")
+                summary = self._trim_summary_to_word_limit(result)
+                print(f"  ↩ Last-resort Anthropic summary ({len(summary.split())} words)")
                 return summary
         except Exception as e:
             print(f"  ✗ Last-resort Anthropic error: {e}")
@@ -583,16 +580,16 @@ Article Content:
 {content}
 
 Instructions for the summary:
-1. Write no more than {self.summary_char_limit} characters
+1. Write no more than {self.summary_word_limit} words
 2. Include the most important facts, figures, and key statistics
 3. Name all important people, companies, and organizations
 4. Explain the core context and main points
 5. Describe the key implications
 6. Use clear, engaging language
 7. Be concise and focused - every sentence should add value
-8. Stay within the {self.summary_char_limit}-character limit
+8. Stay within the {self.summary_word_limit}-word limit
 
-Write a summary ({self.summary_char_limit} characters or fewer):"""
+Write a summary ({self.summary_word_limit} words or fewer):"""
 
         # Try providers in configured order
         for provider in self.provider_order:
@@ -647,11 +644,10 @@ Write a summary ({self.summary_char_limit} characters or fewer):"""
                     print(f"  ⊘ {provider_name} returned failure message, trying next provider...")
                     continue  # Try next provider
 
-                result = self._trim_summary_to_limit(result)
-                char_count = len(result)
+                result = self._trim_summary_to_word_limit(result)
                 word_count = len(result.split())
-                print(f"  ✓ {provider_name} generated {char_count} char summary")
-                if word_count < 10:
+                print(f"  ✓ {provider_name} generated {word_count} word summary")
+                if word_count < 40:
                     print(f"  ⚠ Summary might be too short")
                 return result
             else:
