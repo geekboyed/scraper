@@ -3728,7 +3728,7 @@ if (!empty($cat_params)) {
                             <div id="summary-<?php echo $row['id']; ?>" class="article-summary summary-hidden">
                                 <?php echo nl2br(htmlspecialchars($row['summary'])); ?>
                             </div>
-                            <?php if ($row['fullArticle'] && trim($row['fullArticle']) != ''): ?>
+                            <?php if (isset($row['fullArticle']) && $row['fullArticle'] && trim($row['fullArticle']) != ''): ?>
                             <div id="fulltext-<?php echo $row['id']; ?>" style="display: none;"
                                  data-title="<?php echo htmlspecialchars($row['title']); ?>"
                                  data-url="<?php echo htmlspecialchars($row['url']); ?>"

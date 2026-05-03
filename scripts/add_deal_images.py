@@ -108,6 +108,24 @@ class DealImageAdder:
             print(f"  Google API error: {e}")
             return None
 
+    def search_bing_images(self, query):
+        """Search Bing Images — uses urllib to avoid requests SSL issues on some hosts"""
+        import urllib.request as _urlreq
+        try:
+            url = f"https://www.bing.com/images/search?q={quote_plus(query)}&first=1"
+            req = _urlreq.Request(url, headers={'User-Agent': self.headers['User-Agent']})
+            with _urlreq.urlopen(req, timeout=15) as resp:
+                text = resp.read().decode('utf-8', errors='ignore')
+
+            matches = re.findall(r'mediaurl=([^&]+)&', text)
+            for encoded in matches:
+                img_url = unquote(encoded)
+                if re.search(r'\.(jpg|jpeg|png|webp)(\?|$)', img_url, re.IGNORECASE):
+                    return img_url
+        except Exception as e:
+            print(f"  Bing search error: {e}")
+        return None
+
     def scrape_google_images(self, query):
         """Fallback: Scrape Google Images directly"""
         try:
@@ -210,6 +228,11 @@ class DealImageAdder:
         image_url = self.scrape_google_images(clean_name)
         if image_url:
             print(f"  ✓ Found via Google scrape")
+            return image_url
+
+        image_url = self.search_bing_images(clean_name)
+        if image_url:
+            print(f"  ✓ Found via Bing search")
             return image_url
 
         print(f"  ✗ No image found")
@@ -373,9 +396,11 @@ class DealImageAdder:
                     OR image_url LIKE '%image-default%'
                     OR image_url LIKE '%placeholder%'
                     OR image_url LIKE '%no-image%'
+                    OR image_url LIKE '%fallback%'
+                    OR image_url LIKE '%image-pool%'
                 )
                 AND is_active = 'Y'
-                ORDER BY posted_at DESC
+                ORDER BY scraped_at DESC
                 LIMIT %s
             """, (limit,))
 
